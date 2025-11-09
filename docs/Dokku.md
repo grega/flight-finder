@@ -147,19 +147,6 @@ Check logs:
 dokku logs flight-finder
 ```
 
-## Optional: Add Health Checks
-
-Configure Dokku to check your app's health:
-
-```bash
-dokku checks:set flight-finder web /health
-```
-
-This will:
-- Check `/health` endpoint before routing traffic
-- Automatically restart if health check fails
-- Ensure zero-downtime deployments
-
 ## Performance Optimization
 
 ### 1. Enable response caching
