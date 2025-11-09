@@ -1,1 +1,5 @@
 .env
+.pyv
+.DS_Store
+__pycache__/
+.pytest_cache/
