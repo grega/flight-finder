@@ -6,18 +6,6 @@ https://dokku.com/
 
 Dokku will automatically detect your app as Python (via `requirements.txt`) and use the `Procfile` to start your application with Gunicorn instead of Flask's development server.
 
-## Required Files
-
-Ensure you have these files in your repository:
-
-```
-your-app/
-├── flight_service.py
-├── requirements.txt
-├── Procfile
-└── runtime.txt (optional, but recommended)
-```
-
 ## Deployment Steps
 
 ### 1. Create the Dokku app
