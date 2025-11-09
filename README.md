@@ -30,7 +30,7 @@ A Flask-based REST API service that finds the closest aircraft to given coordina
    pip install -r requirements.txt
    ```
 
-4. Configure an API key to enable optional authentication:
+4. Configure an API key in a `.env` file to enable optional authentication:
 
    ```bash
    SERVICE_API_KEY=
