@@ -180,28 +180,6 @@ Headers:
 app.run(host='0.0.0.0', port=port, debug=True)  # enable debug mode
 ```
 
-## Testing with Python
-
-```python
-import requests
-
-# Basic request
-response = requests.get(
-    "http://localhost:3000/closest-flight",
-    params={"lat": 37.7749, "lon": -122.4194, "radius": 150}
-)
-print(response.json())
-
-# With API key
-headers = {"X-API-Key": "your_secret_key"}
-response = requests.get(
-    "http://localhost:3000/closest-flight",
-    params={"lat": 37.7749, "lon": -122.4194},
-    headers=headers
-)
-print(response.json())
-```
-
 ## Production Deployment
 
 This README covers development setup. For production deployment to Dokku, Heroku, or other platforms, see the deployment guides in `/docs`.
