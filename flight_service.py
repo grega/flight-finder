@@ -195,5 +195,5 @@ def index():
 
 if __name__ == '__main__':
     # for development, in production use the Procfile instead
-    port = int(os.getenv('PORT', 3000))
+    port = int(os.getenv('PORT', 7478))
     app.run(host='0.0.0.0', port=port, debug=False)

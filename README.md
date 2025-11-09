@@ -51,7 +51,13 @@ A Flask-based REST API service that finds the closest aircraft to given coordina
    python flight_service.py
    ```
 
-   The service will start on `http://0.0.0.0:3000`
+   The service will start on: http://0.0.0.0:7478
+
+6. Run the tests:
+
+   ```bash
+   pytest
+   ```
 
 ## Usage
 
@@ -60,7 +66,7 @@ A Flask-based REST API service that finds the closest aircraft to given coordina
 Test if the service is running:
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:7478/health
 ```
 
 Response:
@@ -73,14 +79,14 @@ Response:
 **Basic request:**
 
 ```bash
-curl "http://localhost:3000/closest-flight?lat=37.7749&lon=-122.4194&radius=25"
+curl "http://localhost:7478/closest-flight?lat=37.7749&lon=-122.4194&radius=25"
 ```
 
 **With API key authentication:**
 
 ```bash
 curl -H "X-API-Key: your_secret_key_here" \
-  "http://localhost:3000/closest-flight?lat=37.7749&lon=-122.4194&radius=25"
+  "http://localhost:7478/closest-flight?lat=37.7749&lon=-122.4194&radius=25"
 ```
 
 ### API Parameters
