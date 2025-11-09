@@ -2,15 +2,6 @@
 
 A Flask-based REST API service that finds the closest aircraft to given coordinates using FlightRadar24 data. Designed to be lightweight and queryable by IoT devices like the Raspberry Pi Pico 2 W.
 
-## Features
-
-- Find closest in-flight aircraft to any coordinate
-- Search by latitude/longitude with configurable radius
-- Optional API key authentication
-- Returns detailed flight information (route, aircraft, position)
-- Lightweight JSON responses optimized for IoT devices
-- Health check endpoint for monitoring
-
 ## Quick Start
 
 ### Prerequisites
