@@ -7,7 +7,7 @@ A Flask-based REST API service that finds the closest aircraft to given coordina
 ### Prerequisites
 
 - Python 3.8 or higher
-- pip (Python package manager)
+- pip
 
 ### Installation
 
