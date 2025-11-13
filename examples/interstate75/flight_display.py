@@ -20,7 +20,7 @@ LONGITUDE = -0.2595316
 RADIUS = 25 # km
 
 # quiet time config (ie. show nothing on the display between these times)
-UTC_OFFSET = -2 # offset of your timezone from UTC (hours)
+UTC_OFFSET = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
 QUIET_START_HOUR = 22
 QUIET_START_MINUTE = 0
 QUIET_END_HOUR = 7
