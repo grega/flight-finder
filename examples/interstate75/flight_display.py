@@ -1,9 +1,9 @@
-import time
+import json
 import machine
 import network
 import ntptime
+import time
 import urequests
-import json
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
 
 i75 = Interstate75(display=DISPLAY_INTERSTATE75_64X32)
