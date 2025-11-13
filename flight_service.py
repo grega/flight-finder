@@ -118,7 +118,7 @@ def get_closest_flight():
             }), 200
         
         try:
-            flight_details = fr_api.get_flight_details(closest_flight.id)
+            flight_details = fr_api.get_flight_details(closest_flight)
             closest_flight.set_flight_details(flight_details)
         except:
             pass # proceed without detailed flight info if fetching fails
@@ -155,6 +155,8 @@ def get_closest_flight():
         }
         
         # add detailed info if available
+        if hasattr(closest_flight, 'aircraft_model'):
+            response["flight"]["aircraft"]["model"] = closest_flight.aircraft_model
         if hasattr(closest_flight, 'origin_airport_name'):
             response["flight"]["route"]["origin_name"] = closest_flight.origin_airport_name
         if hasattr(closest_flight, 'destination_airport_name'):
