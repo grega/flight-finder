@@ -8,10 +8,10 @@ A Flask-based REST API service that finds the closest aircraft to given coordina
 
 - Python 3.8 or higher
 - pip
-
+ 
 ### Installation
 
-1. Install Python via asdf
+1. Install Python via [asdf](https://asdf-vm.com/guide/getting-started.html) (recommended):
 
     ```bash
     asdf install
@@ -169,17 +169,17 @@ Query Parameters:
 - `radius` (optional): Search radius in km (default: 10)
 
 Headers:
-- `X-API-Key` (optional): API key if authentication is enabled
+- `X-API-Key` (optional): API key, if authentication is enabled
 
 ## Debug
 
 ```python
-app.run(host='0.0.0.0', port=port, debug=True)  # enable debug mode
+app.run(host='0.0.0.0', port=port, debug=True) # enable debug mode
 ```
 
 ## Production Deployment
 
-This README covers development setup. For production deployment to Dokku, Heroku, or other platforms, see the deployment guides in `/docs`.
+This README covers development setup. For production deployments, see the deployment guides in `/docs`.
 
 ## Data Source
 
