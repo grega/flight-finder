@@ -12,12 +12,13 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 
 Once connected to the device:
   - Copy the `flight_display.py` file onto the device
-  - Configure the location by editing the `LATITUDE`, `LONGITUDE` and `RADIUS` variables in `flight_display.py`
+  - Set `API_URL` in `flight_display.py`
+  - Configure the location by editing `LATITUDE`, `LONGITUDE` and `RADIUS` in `flight_display.py`
   - Create a `secrets.py` file containing:
 
     ```python
     WIFI_SSID = ""
-    WIFI_PASSWORD = "a"
+    WIFI_PASSWORD = ""
     FLIGHT_FINDER_API_KEY = ""
     ```
   Run the `flight_display.py` script to start displaying flights

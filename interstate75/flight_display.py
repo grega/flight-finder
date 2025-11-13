@@ -10,9 +10,12 @@ display = i75.display
 WIDTH = i75.width # 64 pixels
 HEIGHT = i75.height # 32 pixels
 
+# API config
+API_URL = "https://wherever-the-flight-finder-service-is-deployed"
+
 # location config
-LATITUDE = 33.0118884
-LONGITUDE = -97.0558339
+LATITUDE = 51.5274575
+LONGITUDE = -0.2595316
 RADIUS = 25 # km
 
 # colors
@@ -76,7 +79,7 @@ def network_connect(ssid, password):
 def fetch_flight_data(api_key):
     """Fetch closest flight data from the API"""
     try:
-        url = f"https://flight-finder.gregdev.com/closest-flight?lat={LATITUDE}&lon={LONGITUDE}&radius={RADIUS}"
+        url = f"{API_URL}/closest-flight?lat={LATITUDE}&lon={LONGITUDE}&radius={RADIUS}"
         
         headers = {
             "X-API-Key": api_key
@@ -110,7 +113,7 @@ def fetch_flight_data(api_key):
             response.close()
 
 def shorten_aircraft_model(model):
-    """Replace manufacturer names with shorthand versions."""
+    """Replace long manufacturer names with shorthand versions"""
     words = model.split()
 
     if not words:
