@@ -1,6 +1,6 @@
 # Interstate 75 Flight Display
 
-This MicroPython project displays nearby flight information (fetched from the Flight Finder Service) on an [Interstate 75 W](https://shop.pimoroni.com/products/interstate-75-w?variant=54977948713339) powered LED display ([64x32 RGB LED matrix](https://shop.pimoroni.com/products/rgb-led-matrix-panel?variant=42312764298)).
+This MicroPython project displays nearby flight information (fetched from the Flight Finder Service API) on an [Interstate 75 W](https://shop.pimoroni.com/products/interstate-75-w?variant=54977948713339) powered LED display ([64x32 RGB LED matrix](https://shop.pimoroni.com/products/rgb-led-matrix-panel?variant=42312764298)).
 
 Inspired by: https://blog.colinwaddell.com/articles/flight-tracker
 
