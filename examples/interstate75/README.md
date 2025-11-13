@@ -14,6 +14,8 @@ Once connected to the device:
   - Copy the `flight_display.py` file onto the device
   - Set `API_URL` in `flight_display.py`
   - Configure the location by editing `LATITUDE`, `LONGITUDE` and `RADIUS` in `flight_display.py`
+  - Optionally adjust the quiet time settings in `flight_display.py` (show nothing on the display between these times)
+    - Be sure to set `UTC_OFFSET` to correctly calculate quiet time based on your timezone
   - Create a `secrets.py` file containing:
 
     ```python

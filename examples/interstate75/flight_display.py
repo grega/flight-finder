@@ -1,6 +1,7 @@
 import time
 import machine
 import network
+import ntptime
 import urequests
 import json
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
@@ -18,18 +19,31 @@ LATITUDE = 51.5274575
 LONGITUDE = -0.2595316
 RADIUS = 25 # km
 
-# colors
+# quiet time config (ie. show nothing on the display between these times)
+UTC_OFFSET = -2 # offset of your timezone from UTC (hours)
+QUIET_START_HOUR = 22
+QUIET_START_MINUTE = 0
+QUIET_END_HOUR = 7
+QUIET_END_MINUTE = 0
+
+# colors (RGB values are weirdly off - bug in I75?)
 BLACK = display.create_pen(0, 0, 0)
 WHITE = display.create_pen(255, 255, 255)
-RED = display.create_pen(255, 0, 0)
-GREEN = display.create_pen(0, 255, 0)
-BLUE = display.create_pen(0, 0, 255)
-YELLOW = display.create_pen(255, 255, 0)
-CYAN = display.create_pen(0, 255, 255)
-MAGENTA = display.create_pen(255, 0, 255)
+GREEN = display.create_pen(255, 64, 64)
+BLUE = display.create_pen(64, 255, 64)
+RED = display.create_pen(64, 64, 255)
+CYAN = display.create_pen(255, 255, 64)
+MAGENTA = display.create_pen(64, 255, 255)
+YELLOW = display.create_pen(255, 64, 255)
 
 # font
 display.set_font("bitmap8")
+
+def clear_display():
+    """Clear the display and turn it off"""
+    display.set_pen(BLACK)
+    display.clear()
+    i75.update()
 
 def network_connect(ssid, password):
     """Connect to Wi-Fi network with improved reliability"""
@@ -76,6 +90,28 @@ def network_connect(ssid, password):
         i75.update()
         return True
 
+def is_quiet_period():
+    """Check if current time is within the quiet period, using UTC_OFFSET"""
+    try:
+        current_time = time.localtime()
+        utc_hour = current_time[3]
+        utc_minute = current_time[4]
+
+        local_hour = (utc_hour + UTC_OFFSET) % 24
+        local_minute = utc_minute
+
+        quiet_start = QUIET_START_HOUR * 60 + QUIET_START_MINUTE
+        quiet_end = QUIET_END_HOUR * 60 + QUIET_END_MINUTE
+        current = local_hour * 60 + local_minute
+
+        # handle overnight quiet period (eg. 22:00 to 07:00)
+        if quiet_start > quiet_end:
+            return current >= quiet_start or current < quiet_end
+        else: # quiet period is within a single day
+            return current >= quiet_start and current < quiet_end
+    except:
+        return False
+
 def fetch_flight_data(api_key):
     """Fetch closest flight data from the API"""
     try:
@@ -121,7 +157,7 @@ def shorten_aircraft_model(model):
 
     manufacturer_shorthand = {
         "Mitsubishi": "Mitsu",
-        "Bombardier": "Bomb"
+        "Bombardier": "Bomba"
     }
 
     first_word = words[0]
@@ -136,14 +172,14 @@ def display_flight_data(data):
     display.clear()
 
     if not data:
-        display.set_pen(RED)
-        display.text("No data", 2, 2, WIDTH, 1)
+        display.set_pen(YELLOW)
+        display.text("No data returned", 2, 2, WIDTH, 1)
         i75.update()
         return
 
     if not data.get("found"):
-        display.set_pen(WHITE)
-        display.text("No flights", 2, 2, WIDTH, 1)
+        display.set_pen(YELLOW)
+        display.text("No flights in current radius", 2, 2, WIDTH, 1)
         i75.update()
         return
     
@@ -159,13 +195,13 @@ def display_flight_data(data):
         aircraft_model = aircraft_model.split('-')[0] 
 
     # display the flight info...
-    display.set_pen(MAGENTA)
+    display.set_pen(YELLOW)
     display.text(f"{origin} > {destination}", 2, 2, WIDTH, 1)
 
     display.set_pen(CYAN)
     display.text(f"{flight_number}", 2, 13, WIDTH, 1)
 
-    display.set_pen(YELLOW)
+    display.set_pen(MAGENTA)
     display.text(f"{aircraft_model}", 2, 23, 100, 1) # set word-wrap to a large value (100) so as to never wrap
 
     i75.update()
@@ -200,9 +236,15 @@ def main():
         if not connected:
             time.sleep(5)
 
+    try:
+        ntptime.host = "pool.ntp.org"
+        ntptime.settime()
+    except:
+        print("Failed to sync time")
+
     display.set_pen(BLACK)
     display.clear()
-    display.set_pen(WHITE)
+    display.set_pen(GREEN)
     display.text("Fetching...", 2, 2, 100, 1)
     display.text(f"{LATITUDE}", 2, 13, 100, 1)
     display.text(f"{LONGITUDE}", 2, 23, 100, 1)
@@ -210,6 +252,13 @@ def main():
     time.sleep(3)
     
     while True:
+        if is_quiet_period():
+            print("Quiet time")
+            clear_display()
+            # sleep for 5 minutes during quiet period to reduce activity
+            time.sleep(300)
+            continue
+        
         try:
             flight_data = fetch_flight_data(FLIGHT_FINDER_API_KEY)
 
