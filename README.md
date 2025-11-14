@@ -2,7 +2,7 @@
 
 A Flask-based REST API service that finds the closest aircraft to given coordinates using FlightRadar24 data. Designed to be lightweight and queryable by IoT devices like the Raspberry Pi Pico 2 W.
 
-The service was designed to be consumed by lower-power wifi-enabled devices hooked up to a display of sorts, see the [interstate75 directory](examples/interstate75/README.md) for an example project using a Pimoroni "Interstate 75 W" (RP2350) controller with an LED matrix display.
+The service was designed to be consumed by lower-power wifi-enabled devices hooked up to a display of sorts, see the [interstate75 directory](examples/interstate75) for an example project using a Pimoroni "Interstate 75 W" (RP2350) controller with an LED matrix display.
 
 ## Quick Start
 
