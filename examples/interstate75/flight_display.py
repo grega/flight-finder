@@ -123,7 +123,8 @@ def fetch_flight_data(api_key):
         url = f"{API_URL}/closest-flight?lat={LATITUDE}&lon={LONGITUDE}&radius={RADIUS}"
         
         headers = {
-            "X-API-Key": api_key
+            "X-API-Key": api_key,
+            "User-Agent": "I75 Matrix Display" # set further user-agent info if desired
         }
 
         print(f"Fetching data from: {url}")
