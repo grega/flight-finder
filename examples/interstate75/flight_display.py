@@ -8,37 +8,43 @@ from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
 
 i75 = Interstate75(display=DISPLAY_INTERSTATE75_64X32)
 display = i75.display
-WIDTH = i75.width # 64 pixels
+
+WIDTH  = i75.width # 64 pixels
 HEIGHT = i75.height # 32 pixels
 
-# API config
+##########
+# Config #
+##########
 API_URL = "https://wherever-the-flight-finder-service-is-deployed"
 
-# location config
-LATITUDE = 51.5274575
+# location
+LATITUDE  = 51.5274575
 LONGITUDE = -0.2595316
-RADIUS = 25 # km
+RADIUS    = 25 # km
 
 # quiet time config (ie. show nothing on the display between these times)
-UTC_OFFSET = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
-QUIET_START_HOUR = 22
+UTC_OFFSET         = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
+QUIET_START_HOUR   = 22
 QUIET_START_MINUTE = 0
-QUIET_END_HOUR = 7
-QUIET_END_MINUTE = 0
+QUIET_END_HOUR     = 7
+QUIET_END_MINUTE   = 0
 
 # colors (RGB values are weirdly off - bug in I75?)
-BLACK = display.create_pen(0, 0, 0)
-WHITE = display.create_pen(255, 255, 255)
-GREEN = display.create_pen(255, 64, 64)
-BLUE = display.create_pen(64, 255, 64)
-RED = display.create_pen(64, 64, 255)
-CYAN = display.create_pen(255, 255, 64)
+BLACK   = display.create_pen(0, 0, 0)
+WHITE   = display.create_pen(255, 255, 255)
+GREEN   = display.create_pen(255, 64, 64)
+BLUE    = display.create_pen(64, 255, 64)
+RED     = display.create_pen(64, 64, 255)
+CYAN    = display.create_pen(255, 255, 64)
 MAGENTA = display.create_pen(64, 255, 255)
-YELLOW = display.create_pen(255, 64, 255)
+YELLOW  = display.create_pen(255, 64, 255)
 
 # font
 display.set_font("bitmap8")
 
+#############
+# Functions #
+#############
 def clear_display():
     """Clear the display and turn it off"""
     display.set_pen(BLACK)
@@ -67,7 +73,6 @@ def network_connect(ssid, password):
             break
         max_wait -= 1
         print('Waiting for connection...')
-        display.fill_rectangle(2, 2, WIDTH, 8)
         display.set_pen(WHITE)
         display.text(f"WiFi {max_wait}", 2, 2, WIDTH, 1)
         i75.update()
@@ -149,7 +154,11 @@ def fetch_flight_data(api_key):
             response.close()
 
 def shorten_aircraft_model(model):
-    """Replace long manufacturer names with shorthand versions"""
+    """Replace long manufacturer names with shorthand versions, remove unneeded model info"""
+    # eg. remove "-132" from "Airbus A319-132"
+    if '-' in model:
+        model = model.split('-')[0]
+        
     words = model.split()
 
     if not words:
@@ -166,6 +175,14 @@ def shorten_aircraft_model(model):
 
     return " ".join(words)
 
+def round_value(value):
+    if value >= 1:
+        return round(value)
+    elif 0 < value < 1:
+        return round(value, 1)
+    else:
+        return value
+    
 def display_flight_data(data):
     """Display flight data on the Interstate 75 screen"""
     display.set_pen(BLACK)
@@ -179,7 +196,7 @@ def display_flight_data(data):
 
     if not data.get("found"):
         display.set_pen(YELLOW)
-        display.text("No flights in current radius", 2, 2, WIDTH, 1)
+        display.text(f"No flights in radius ({RADIUS}km)", 2, 2, WIDTH, 1)
         i75.update()
         return
     
@@ -187,12 +204,9 @@ def display_flight_data(data):
     flight = data.get("flight", {})
     flight_number = data.get("flight", {}).get("number", "N/A")
     aircraft_model = shorten_aircraft_model(flight.get("aircraft", {}).get("model", "N/A"))
+    distance_km = round_value(data.get("distance_km", {}))
     origin = flight.get("route", {}).get("origin_iata", "N/A")
     destination = flight.get("route", {}).get("destination_iata", "N/A")
-    
-    # eg. remove "-132" from "Airbus A319-132"
-    if '-' in aircraft_model:
-        aircraft_model = aircraft_model.split('-')[0] 
 
     # display the flight info...
     display.set_pen(YELLOW)
@@ -200,6 +214,9 @@ def display_flight_data(data):
 
     display.set_pen(CYAN)
     display.text(f"{flight_number}", 2, 13, WIDTH, 1)
+    flight_pixel_width = len(flight_number) * 6 # 6 is the character width
+    display.set_pen(BLUE)
+    display.text(f"{distance_km}km", flight_pixel_width + 1, 13, 100, 1)
 
     display.set_pen(MAGENTA)
     display.text(f"{aircraft_model}", 2, 23, 100, 1) # set word-wrap to a large value (100) so as to never wrap
@@ -239,6 +256,9 @@ def main():
     try:
         ntptime.host = "pool.ntp.org"
         ntptime.settime()
+        now = time.localtime()
+        print("Date: {}/{}/{}".format(now[1], now[2], now[0]))
+        print("Time: {}:{}".format(now[3], now[4]))
     except:
         print("Failed to sync time")
 
