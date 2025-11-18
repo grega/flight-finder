@@ -15,12 +15,14 @@ HEIGHT = i75.height # 32 pixels
 ##########
 # Config #
 ##########
-API_URL = "https://wherever-the-flight-finder-service-is-deployed"
-
-# location
-LATITUDE  = 51.5274575
-LONGITUDE = -0.2595316
-RADIUS    = 25 # km
+API_URL          = "https://wherever-the-flight-finder-service-is-deployed"
+BRIGHT_MODE      = False # Set to True for brighter (higher intensity) colours
+DISTANCE_UNIT    = "km" # km or mi, for display purposes only
+LATITUDE         = 51.5274575 # lat of display location
+LONGITUDE        = -0.2595316 # lon of display location
+RADIUS           = 10 # km, for finding flights
+REFRESH_INTERVAL = 60 # seconds, best to keep this at 30s or more
+USER_AGENT_ID    = "Flight Tracker 1" # ID used as part of user-agent header in requests to API, eg. "I75 Matrix Display {USER_AGENT_ID}" (useful for identifying the devices making requests)
 
 # quiet time config (ie. show nothing on the display between these times)
 UTC_OFFSET         = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
@@ -29,15 +31,15 @@ QUIET_START_MINUTE = 0
 QUIET_END_HOUR     = 7
 QUIET_END_MINUTE   = 0
 
-# colors (RGB values are weirdly off - bug in I75?)
+# colors (RGB values are weirdly off - bug in I75 v0.0.5?)
 BLACK   = display.create_pen(0, 0, 0)
-WHITE   = display.create_pen(255, 255, 255)
-GREEN   = display.create_pen(255, 64, 64)
-BLUE    = display.create_pen(64, 255, 64)
-RED     = display.create_pen(64, 64, 255)
-CYAN    = display.create_pen(255, 255, 64)
-MAGENTA = display.create_pen(64, 255, 255)
-YELLOW  = display.create_pen(255, 64, 255)
+WHITE   = display.create_pen(*((255, 255, 255) if BRIGHT_MODE else (200, 200, 200)))
+RED     = display.create_pen(*((64, 64, 255) if BRIGHT_MODE else (32, 32, 128)))
+GREEN   = display.create_pen(*((255, 64, 64) if BRIGHT_MODE else (128, 32, 32)))
+BLUE    = display.create_pen(*((64, 255, 64) if BRIGHT_MODE else (32, 128, 32)))
+CYAN    = display.create_pen(*((255, 255, 64) if BRIGHT_MODE else (128, 128, 32)))
+MAGENTA = display.create_pen(*((64, 255, 255) if BRIGHT_MODE else (32, 128, 128)))
+YELLOW  = display.create_pen(*((255, 64, 255) if BRIGHT_MODE else (128, 32, 128)))
 
 # font
 display.set_font("bitmap8")
@@ -52,16 +54,16 @@ def clear_display():
     i75.update()
 
 def network_connect(ssid, password):
-    """Connect to Wi-Fi network with improved reliability"""
+    """Connect to WiFi network"""
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     wlan.config(pm=0xa11140) # turn WiFi power saving off for some slow APs
 
-    print("Connecting to Wi-Fi...")
+    print("Connecting to WiFi...")
     display.set_pen(BLACK)
     display.clear()
     display.set_pen(WHITE)
-    display.text("Connecting to Wi-Fi...", 2, 2, WIDTH, 1)
+    display.text("Connecting to WiFi...", 2, 2, WIDTH, 1)
     i75.update()
 
     wlan.connect(ssid, password)
@@ -72,18 +74,18 @@ def network_connect(ssid, password):
         if status < 0 or status >= 3:
             break
         max_wait -= 1
-        print('Waiting for Wi-Fi connection...')
+        print('Waiting for WiFi connection...')
         time.sleep(1)
 
     if wlan.status() != 3:
-        print("Failed to connect to Wi-Fi")
+        print("Failed to connect to WiFi")
         display.set_pen(RED)
         display.clear()
-        display.text("Wi-Fi Err", 2, 2, WIDTH, 1)
+        display.text("WiFi Err", 2, 2, WIDTH, 1)
         i75.update()
         return False
     else:
-        print('Connected to Wi-Fi')
+        print('Connected to WiFi')
         status = wlan.ifconfig()
         print(f'IP: {status[0]}')
         display.set_pen(BLACK)
@@ -122,7 +124,7 @@ def fetch_flight_data(api_key):
         
         headers = {
             "X-API-Key": api_key,
-            "User-Agent": "I75 Matrix Display" # set further user-agent info if desired
+            "User-Agent": f"I75 Matrix Display {USER_AGENT_ID}"
         }
 
         print(f"Fetching data from: {url}")
@@ -153,10 +155,11 @@ def fetch_flight_data(api_key):
             response.close()
 
 def shorten_aircraft_model(model):
-    """Replace long manufacturer names with shorthand versions, remove unneeded model info"""
-    # eg. remove "-132" from "Airbus A319-132"
+    """Replace long manufacturer names with shorthand versions. 
+    Remove unneeded model info
+    """
     if '-' in model:
-        model = model.split('-')[0]
+        model = model.split('-')[0] # eg. remove "-132" from "Airbus A319-132"
         
     words = model.split()
 
@@ -175,27 +178,35 @@ def shorten_aircraft_model(model):
     return " ".join(words)
 
 def round_value(value):
+    """Round values appropriately (depending on their magnitude) for display"""
     if value >= 1:
-        return round(value)
+        return round(value) # nearest whole number
     elif 0 < value < 1:
-        return round(value, 1)
+        return round(value, 1) # 1 decimal place
     else:
-        return value
+        return value # zero or negative, return as-is
     
 def display_flight_data(data):
     """Display flight data on the Interstate 75 screen"""
     display.set_pen(BLACK)
     display.clear()
 
+    if DISTANCE_UNIT == "mi":
+        distance_modifier = 0.621371
+        unit = "mi"
+    else:
+        distance_modifier = 1
+        unit = "km"
+
     if not data:
         display.set_pen(YELLOW)
-        display.text("No data returned", 2, 2, WIDTH, 1)
+        display.text("No data returned", 2, 8, WIDTH, 1)
         i75.update()
         return
 
     if not data.get("found"):
         display.set_pen(YELLOW)
-        display.text(f"No flights in radius ({RADIUS}km)", 2, 2, WIDTH, 1)
+        display.text(f"No flights in radius {round_value(RADIUS * distance_modifier)}{unit}", 2, 8, WIDTH, 1)
         i75.update()
         return
     
@@ -204,9 +215,10 @@ def display_flight_data(data):
     flight_number = data.get("flight", {}).get("number", "N/A")
     aircraft_model = shorten_aircraft_model(flight.get("aircraft", {}).get("model", "N/A"))
     distance_km = round_value(data.get("distance_km", {}))
+    distance = round_value(distance_km * distance_modifier)
     origin = flight.get("route", {}).get("origin_iata", "N/A")
     destination = flight.get("route", {}).get("destination_iata", "N/A")
-
+    
     # display the flight info...
     display.set_pen(YELLOW)
     display.text(f"{origin} > {destination}", 2, 2, WIDTH, 1)
@@ -215,15 +227,35 @@ def display_flight_data(data):
     display.text(f"{flight_number}", 2, 13, WIDTH, 1)
     flight_pixel_width = len(flight_number) * 6 # 6 is the character width
     display.set_pen(BLUE)
-    display.text(f"{distance_km}km", flight_pixel_width + 1, 13, 100, 1)
+    display.text(f"{distance}{unit}", flight_pixel_width + 1, 13, 100, 1)
 
     display.set_pen(MAGENTA)
     display.text(f"{aircraft_model}", 2, 23, 100, 1) # set word-wrap to a large value (100) so as to never wrap
 
     i75.update()
 
+def draw_countdown(progress):
+    """Draw a countdown progress bar in the top-right corner.
+    The bar starts filled and reduces to zero from left to right,
+    disappearing completely only at the end of REFRESH_INTERVAL.
+    """
+    bar_width = 15
+    bar_height = 3
+    x = WIDTH - bar_width
+    y = 2
+
+    filled_width = max(0, int(bar_width * (1 - progress)))
+
+    display.set_pen(BLACK)
+    display.rectangle(x, y, bar_width, bar_height)
+
+    if filled_width > 0:
+        display.set_pen(GREEN)
+        display.rectangle(x + bar_width - filled_width, y, filled_width, bar_height)
+    display.set_pen(BLACK)
+
 def main():
-    """Main function to connect to Wi-Fi, fetch data, and display it"""
+    """Main function to connect to WiFi, fetch data, and display it"""
     try:
         from secrets import WIFI_PASSWORD, WIFI_SSID, FLIGHT_FINDER_API_KEY
         if WIFI_SSID == "":
@@ -257,7 +289,7 @@ def main():
         ntptime.settime()
         now = time.localtime()
         print("Date: {}/{}/{}".format(now[1], now[2], now[0]))
-        print("Time: {}:{}".format(now[3], now[4]))
+        print("Time (UTC): {:02d}:{:02d}".format(now[3], now[4]))
     except:
         print("Failed to sync time")
 
@@ -274,16 +306,21 @@ def main():
         if is_quiet_period():
             print("Quiet time")
             clear_display()
-            # sleep for 5 minutes during quiet period to reduce activity
-            time.sleep(300)
+            time.sleep(300) # sleep for 5 minutes during quiet period to reduce activity
             continue
         
         try:
             flight_data = fetch_flight_data(FLIGHT_FINDER_API_KEY)
-
+            print(f"Displaying flight data for {REFRESH_INTERVAL} seconds...")
             display_flight_data(flight_data)
 
-            time.sleep(30)
+            start_time = time.time()
+            while time.time() - start_time < REFRESH_INTERVAL:
+                elapsed = time.time() - start_time
+                progress = elapsed / REFRESH_INTERVAL
+                draw_countdown(progress)
+                i75.update()
+                time.sleep(1)
 
         except Exception as e:
             print(f"Error in main loop: {e}")
