@@ -227,7 +227,7 @@ def display_flight_data(data):
     # line 2: flight number and distance
     display.set_pen(CYAN)
     display.text(f"{flight_number}", 2, 13, WIDTH, 1)
-    flight_pixel_width = len(flight_number) * 6 # 6 is the character width
+    flight_pixel_width = len(flight_number) * 6 # 6 is the character width for bitmap8
     display.set_pen(BLUE)
     display.text(f"{distance}{unit}", flight_pixel_width, 13, 100, 1)
 
