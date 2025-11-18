@@ -61,7 +61,7 @@ def network_connect(ssid, password):
     display.set_pen(BLACK)
     display.clear()
     display.set_pen(WHITE)
-    display.text("WiFi...", 2, 2, WIDTH, 1)
+    display.text("Connecting to Wi-Fi...", 2, 2, WIDTH, 1)
     i75.update()
 
     wlan.connect(ssid, password)
@@ -74,7 +74,7 @@ def network_connect(ssid, password):
         max_wait -= 1
         print('Waiting for connection...')
         display.set_pen(WHITE)
-        display.text(f"WiFi {max_wait}", 2, 2, WIDTH, 1)
+        display.text(f"Wi-Fi {max_wait}", 2, 2, WIDTH, 1)
         i75.update()
         time.sleep(1)
 
@@ -82,7 +82,7 @@ def network_connect(ssid, password):
         print("Failed to connect to Wi-Fi")
         display.set_pen(RED)
         display.clear()
-        display.text("WiFi Err", 2, 2, WIDTH, 1)
+        display.text("Wi-Fi Err", 2, 2, WIDTH, 1)
         i75.update()
         return False
     else:
