@@ -6,7 +6,8 @@ import time
 import urequests
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
 
-i75 = Interstate75(display=DISPLAY_INTERSTATE75_64X32)
+# the specific panel this was tested on had "RGB" values flipped to "GRB"; you might need to swap back to `COLOR_ORDER_RGB` (or another value)
+i75 = Interstate75(display=DISPLAY_INTERSTATE75_64X32, color_order=Interstate75.COLOR_ORDER_GRB)
 display = i75.display
 
 WIDTH  = i75.width # 64 pixels
@@ -31,15 +32,15 @@ QUIET_START_MINUTE = 0
 QUIET_END_HOUR     = 7
 QUIET_END_MINUTE   = 0
 
-# colors (RGB values are weirdly off, it's more like "GBR" - bug in I75 v0.0.5?)
+# colours, see `color_order=Interstate75.COLOR_ORDER_GRB` above (specifically `COLOR_ORDER_GRB`)
 BLACK   = display.create_pen(0, 0, 0)
 WHITE   = display.create_pen(*((255, 255, 255) if BRIGHT_MODE else (200, 200, 200)))
-RED     = display.create_pen(*((64, 64, 255) if BRIGHT_MODE else (32, 32, 128)))
-GREEN   = display.create_pen(*((255, 64, 64) if BRIGHT_MODE else (128, 32, 32)))
-BLUE    = display.create_pen(*((64, 255, 64) if BRIGHT_MODE else (32, 128, 32)))
-CYAN    = display.create_pen(*((255, 255, 64) if BRIGHT_MODE else (128, 128, 32)))
-MAGENTA = display.create_pen(*((64, 255, 255) if BRIGHT_MODE else (32, 128, 128)))
-YELLOW  = display.create_pen(*((255, 64, 255) if BRIGHT_MODE else (128, 32, 128)))
+BLUE    = display.create_pen(*((64, 64, 255) if BRIGHT_MODE else (32, 32, 128)))
+RED     = display.create_pen(*((255, 64, 64) if BRIGHT_MODE else (128, 32, 32)))
+GREEN   = display.create_pen(*((64, 255, 64) if BRIGHT_MODE else (32, 128, 32)))
+CYAN    = display.create_pen(*((0, 255, 255) if BRIGHT_MODE else (0, 128, 128)))
+MAGENTA = display.create_pen(*((255, 0, 255) if BRIGHT_MODE else (128, 0, 128)))
+YELLOW  = display.create_pen(*((255, 255, 0) if BRIGHT_MODE else (128, 128, 0)))
 
 # font
 display.set_font("bitmap8")
