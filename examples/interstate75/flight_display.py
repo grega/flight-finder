@@ -61,7 +61,7 @@ def network_connect(ssid, password):
     display.set_pen(BLACK)
     display.clear()
     display.set_pen(WHITE)
-    display.text("Connecting to Wi-fi...", 2, 2, WIDTH, 1)
+    display.text("Connecting to Wi-Fi...", 2, 2, WIDTH, 1)
     i75.update()
 
     wlan.connect(ssid, password)
