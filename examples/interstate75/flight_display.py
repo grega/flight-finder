@@ -31,7 +31,7 @@ QUIET_START_MINUTE = 0
 QUIET_END_HOUR     = 7
 QUIET_END_MINUTE   = 0
 
-# colors (RGB values are weirdly off - bug in I75 v0.0.5?)
+# colors (RGB values are weirdly off, it's more like "GBR" - bug in I75 v0.0.5?)
 BLACK   = display.create_pen(0, 0, 0)
 WHITE   = display.create_pen(*((255, 255, 255) if BRIGHT_MODE else (200, 200, 200)))
 RED     = display.create_pen(*((64, 64, 255) if BRIGHT_MODE else (32, 32, 128)))
