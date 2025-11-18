@@ -20,11 +20,11 @@ BRIGHT_MODE      = False # Set to True for brighter (higher intensity) colours
 DISTANCE_UNIT    = "km" # km or mi, for display purposes only
 LATITUDE         = 51.5274575 # lat of display location
 LONGITUDE        = -0.2595316 # lon of display location
-RADIUS           = 10 # km, for finding flights
+RADIUS           = 10 # km, for finding flights (from lat/lon)
 REFRESH_INTERVAL = 60 # seconds, best to keep this at 30s or more
 USER_AGENT_ID    = "Flight Tracker 1" # ID used as part of user-agent header in requests to API, eg. "I75 Matrix Display {USER_AGENT_ID}" (useful for identifying the devices making requests)
 
-# quiet time config (ie. show nothing on the display between these times)
+# "quiet time" config (ie. show nothing on the display between these times)
 UTC_OFFSET         = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
 QUIET_START_HOUR   = 22
 QUIET_START_MINUTE = 0
@@ -220,15 +220,18 @@ def display_flight_data(data):
     destination = flight.get("route", {}).get("destination_iata", "N/A")
     
     # display the flight info...
+    # line 1: origin > destination
     display.set_pen(YELLOW)
     display.text(f"{origin} > {destination}", 2, 2, WIDTH, 1)
 
+    # line 2: flight number and distance
     display.set_pen(CYAN)
     display.text(f"{flight_number}", 2, 13, WIDTH, 1)
     flight_pixel_width = len(flight_number) * 6 # 6 is the character width
     display.set_pen(BLUE)
-    display.text(f"{distance}{unit}", flight_pixel_width + 1, 13, 100, 1)
+    display.text(f"{distance}{unit}", flight_pixel_width, 13, 100, 1)
 
+    # line 3: aircraft model
     display.set_pen(MAGENTA)
     display.text(f"{aircraft_model}", 2, 23, 100, 1) # set word-wrap to a large value (100) so as to never wrap
 
