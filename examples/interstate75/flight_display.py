@@ -262,11 +262,11 @@ def main():
     try:
         from secrets import WIFI_PASSWORD, WIFI_SSID, FLIGHT_FINDER_API_KEY
         if WIFI_SSID == "":
-            raise ValueError("WIFI_SSID in 'secrets.py' is empty!")
+            raise ValueError("WIFI_SSID in 'secrets.py' is empty")
         if WIFI_PASSWORD == "":
-            raise ValueError("WIFI_PASSWORD in 'secrets.py' is empty!")
+            raise ValueError("WIFI_PASSWORD in 'secrets.py' is empty")
         if not FLIGHT_FINDER_API_KEY:
-            raise ValueError("FLIGHT_FINDER_API_KEY in 'secrets.py' is empty!")
+            raise ValueError("FLIGHT_FINDER_API_KEY in 'secrets.py' is empty")
     except ImportError:
         display.set_pen(RED)
         display.clear()
