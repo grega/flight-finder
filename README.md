@@ -1,8 +1,8 @@
 # Flight Finder Service
 
-A Flask-based REST API service that finds the closest aircraft to given coordinates using FlightRadar24 data. Designed to be lightweight and queryable by IoT devices like the Raspberry Pi Pico 2 W.
+A Flask-based REST API service that finds the closest aircraft to given coordinates using FlightRadar24 data.
 
-The service was designed to be consumed by lower-power wifi-enabled devices hooked up to a display of sorts, see the [interstate75 directory](examples/interstate75) for an example project using a Pimoroni "Interstate 75 W" (RP2350) controller with an LED matrix display.
+The service was designed to be consumed by lower-power WiFi-enabled devices (eg. Raspberry Pi Pico 2 W) hooked up to a display of sorts. See the [interstate75 directory](examples/interstate75) for an example project using a Pimoroni "Interstate 75 W" (RP2350) controller with an LED matrix display.
 
 ## Quick Start
 
@@ -113,6 +113,7 @@ Success (flight found):
     },
     "aircraft": {
       "code": "B738",
+      "model": "Boeing 737-800",
       "registration": "N12345"
     },
     "airline": {
@@ -171,7 +172,7 @@ Query Parameters:
 - `radius` (optional): Search radius in km (default: 10)
 
 Headers:
-- `X-API-Key` (optional): API key, if authentication is enabled
+- `X-API-Key` (optional): API key, if authentication is enabled / required
 
 ## Debug
 
