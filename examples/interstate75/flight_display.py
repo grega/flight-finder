@@ -49,7 +49,7 @@ display.set_font("bitmap8")
 # Functions #
 #############
 def clear_display():
-    """Clear the display and turn it off"""
+    """Clear the display / turn it off"""
     display.set_pen(BLACK)
     display.clear()
     i75.update()
@@ -188,7 +188,7 @@ def round_value(value):
         return value # zero or negative, return as-is
     
 def display_flight_data(data):
-    """Display flight data on the Interstate 75 screen"""
+    """Display flight data on the screen"""
     display.set_pen(BLACK)
     display.clear()
 
@@ -241,7 +241,7 @@ def display_flight_data(data):
 def draw_countdown(progress):
     """Draw a countdown progress bar in the top-right corner.
     The bar starts filled and reduces to zero from left to right,
-    disappearing completely only at the end of REFRESH_INTERVAL.
+    disappearing completely at the end of REFRESH_INTERVAL.
     """
     bar_width = 15
     bar_height = 3
