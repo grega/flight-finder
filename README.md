@@ -8,6 +8,8 @@ See the [interstate75 directory](examples/interstate75) for an example project u
 
 https://blog.gregdev.com/posts/2025-11-19-flight-finder-display
 
+![ff-display-1](https://github.com/user-attachments/assets/16e42d57-3e22-4852-b11e-56f426f2234e)
+
 ## Quick Start
 
 ### Prerequisites
