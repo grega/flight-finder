@@ -1,6 +1,6 @@
 # Deploying to Dokku
 
-https://dokku.com/
+This assumes you already have a server running Dokku: https://dokku.com
 
 ## Overview
 
