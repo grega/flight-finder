@@ -169,6 +169,104 @@ def get_closest_flight():
             "error": f"Server error: {str(e)}"
         }), 500
 
+@app.route('/flights-in-radius', methods=['GET'])
+def get_flights_in_radius():
+    if not validate_api_key():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+        radius_km = float(request.args.get('radius', 10))
+
+        if not (-90 <= lat <= 90):
+            return jsonify({"error": "Latitude must be between -90 and 90"}), 400
+        if not (-180 <= lon <= 180):
+            return jsonify({"error": "Longitude must be between -180 and 180"}), 400
+        if not (1 <= radius_km <= 500):
+            return jsonify({"error": "Radius must be between 1 and 500 km"}), 400
+
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid parameters. Required: lat, lon. Optional: radius"}), 400
+
+    try:
+        bounds = calculate_bounds(lat, lon, radius_km)
+        flights = fr_api.get_flights(bounds=bounds)
+
+        if not flights:
+            return jsonify({
+                "found": False,
+                "message": "No flights found in search area"
+            }), 200
+
+        response = {
+            "found": True,
+            "flights": []
+        }
+
+        for flight in flights:
+            if flight.on_ground:  # Skip grounded flights
+                continue
+
+            if flight.latitude is None or flight.longitude is None:
+                continue
+
+            try:
+                flight_details = fr_api.get_flight_details(flight)
+                flight.set_flight_details(flight_details)
+            except:
+                pass  # Proceed without detailed flight info if fetching fails
+
+            flight_data = {
+                "id": flight.id,
+                "number": flight.number,
+                "callsign": flight.callsign,
+                "icao_24bit": flight.icao_24bit,
+                "position": {
+                    "latitude": flight.latitude,
+                    "longitude": flight.longitude,
+                    "altitude": flight.altitude,
+                    "heading": flight.heading,
+                    "ground_speed": flight.ground_speed,
+                    "vertical_speed": flight.vertical_speed
+                },
+                "aircraft": {
+                    "code": flight.aircraft_code,
+                    "registration": flight.registration
+                },
+                "airline": {
+                    "icao": flight.airline_icao,
+                    "iata": flight.airline_iata
+                },
+                "route": {
+                    "origin_iata": flight.origin_airport_iata,
+                    "destination_iata": flight.destination_airport_iata
+                }
+            }
+
+            # Add detailed info if available
+            if hasattr(flight, 'aircraft_model'):
+                flight_data["aircraft"]["model"] = flight.aircraft_model
+            if hasattr(flight, 'origin_airport_name'):
+                flight_data["route"]["origin_name"] = flight.origin_airport_name
+            if hasattr(flight, 'destination_airport_name'):
+                flight_data["route"]["destination_name"] = flight.destination_airport_name
+
+            response["flights"].append(flight_data)
+
+        # If no flights were added (e.g., all were grounded), return "not found"
+        if not response["flights"]:
+            return jsonify({
+                "found": False,
+                "message": "No airborne flights found in search area"
+            }), 200
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        return jsonify({
+            "error": f"Server error: {str(e)}"
+        }), 500
 
 @app.route('/', methods=['GET'])
 def index():
@@ -190,6 +288,16 @@ def index():
                     "radius": "Search radius in km (optional, default 10, max 500)"
                 },
                 "example": "/closest-flight?lat=37.7749&lon=-122.4194&radius=10"
+            },
+            "/flights-in-radius": {
+                "method": "GET",
+                "description": "Find all flights within a given radius of coordinates",
+                "parameters": {
+                    "lat": "Latitude (required, -90 to 90)",
+                    "lon": "Longitude (required, -180 to 180)",
+                    "radius": "Search radius in km (optional, default 10, max 500)"
+                },
+                "example": "/flights-in-radius?lat=37.7749&lon=-122.4194&radius=10"
             }
         }
     }), 200

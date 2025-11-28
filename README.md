@@ -153,6 +153,16 @@ Error:
 }
 ```
 
+### Find Flights in Radius
+
+This works similarly to the `/closest-flight` endpoint but returns all flights within the specified radius.
+
+```bash
+curl "http://localhost:7478/flights-in-radius?lat=37.7749&lon=-122.4194&radius=25"
+```
+
+The response contains a `flights` array containing all flights within the specified radius (each `flight` object has the same structure as in the `/closest-flight` response).
+
 ## API Endpoints
 
 ### `GET /`
@@ -176,6 +186,22 @@ Query Parameters:
 - `lat` (required): Latitude
 - `lon` (required): Longitude  
 - `radius` (optional): Search radius in km (default: 10)
+
+Headers:
+- `X-API-Key` (optional): API key, if authentication is enabled / required
+
+Here’s the documentation for your **`/flights-in-radius`** endpoint, styled to match the format of your existing `/closest-flight` documentation:
+
+---
+
+### `GET /flights-in-radius`
+
+Find all in-flight aircraft within a given radius of the specified coordinates.
+
+Query Parameters:
+- `lat` (required): Latitude
+- `lon` (required): Longitude
+- `radius` (optional): Search radius in kilometers (default: 10)
 
 Headers:
 - `X-API-Key` (optional): API key, if authentication is enabled / required

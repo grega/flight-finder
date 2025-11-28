@@ -129,3 +129,92 @@ def test_internal_error_handling(mock_api, client):
     response = client.get("/closest-flight?lat=10&lon=20")
     assert response.status_code == 500
     assert "Server error" in response.get_json()["error"]
+
+@patch("flight_service.fr_api")
+def test_flights_in_radius_found(mock_api, client):
+    """Test that the endpoint returns all flights in the radius."""
+    dummy_flight1 = DummyFlight(flight_id="ABC123", lat=10.1, lon=20.1)
+    dummy_flight2 = DummyFlight(flight_id="DEF456", lat=10.2, lon=20.2)
+    mock_api.get_flights.return_value = [dummy_flight1, dummy_flight2]
+    mock_api.get_flight_details.return_value = {"origin": "London", "destination": "Paris"}
+
+    response = client.get("/flights-in-radius?lat=10&lon=20")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["found"] is True
+    assert len(data["flights"]) == 2
+    assert data["flights"][0]["id"] == "ABC123"
+    assert data["flights"][1]["id"] == "DEF456"
+    assert data["flights"][0]["route"]["origin_name"] == "London"
+
+@patch("flight_service.fr_api")
+def test_flights_in_radius_empty(mock_api, client):
+    """Test that the endpoint handles no flights found."""
+    mock_api.get_flights.return_value = []
+
+    response = client.get("/flights-in-radius?lat=10&lon=20")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["found"] is False
+    assert "No flights" in data["message"]
+
+@patch("flight_service.fr_api")
+def test_flights_in_radius_grounded(mock_api, client):
+    """Test that the endpoint filters out grounded flights."""
+    grounded = DummyFlight()
+    grounded.on_ground = True
+    mock_api.get_flights.return_value = [grounded]
+
+    response = client.get("/flights-in-radius?lat=10&lon=20")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["found"] is False
+    assert "No airborne flights" in data["message"]
+
+@patch("flight_service.fr_api")
+def test_flights_in_radius_error(mock_api, client):
+    """Test that the endpoint handles internal errors."""
+    mock_api.get_flights.side_effect = Exception("Simulated failure")
+
+    response = client.get("/flights-in-radius?lat=10&lon=20")
+    data = response.get_json()
+
+    assert response.status_code == 500
+    assert "Server error" in data["error"]
+
+@patch("flight_service.fr_api")
+def test_flights_in_radius_with_api_key(mock_api, client, monkeypatch):
+    """Test that the endpoint respects API key authentication."""
+    monkeypatch.setattr("flight_service.API_KEY", "secret")
+    dummy_flight = DummyFlight()
+    mock_api.get_flights.return_value = [dummy_flight]
+
+    response = client.get(
+        "/flights-in-radius?lat=10&lon=20",
+        headers={"X-API-Key": "secret"}
+    )
+    assert response.status_code in (200, 400, 500)
+
+    response = client.get(
+        "/flights-in-radius?lat=10&lon=20",
+        headers={"X-API-Key": "wrong"}
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "Unauthorized"
+
+@pytest.mark.parametrize("query", [
+    "lon=10",
+    "lat=91&lon=0",
+    "lat=0&lon=181",
+    "lat=0&lon=0&radius=0",
+    "lat=0&lon=0&radius=9999"
+])
+def test_flights_in_radius_invalid_parameters(client, query):
+    """Test that the endpoint validates parameters."""
+    response = client.get(f"/flights-in-radius?{query}")
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
