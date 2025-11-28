@@ -1,4 +1,4 @@
-# Python flight monitor
+# Python aircraft monitor
 
 Uses the Flight Finder API to monitor for nearby flights matching an aircraft type, and then alerting if they match particular thresholds: 
 
