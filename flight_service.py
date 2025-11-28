@@ -1,6 +1,5 @@
 """
 Web service for finding closest flights using FlightRadarAPI
-Designed to be called by devices with minimal processing power (like a tracker running on a Pico W)
 """
 
 from dotenv import load_dotenv
@@ -16,16 +15,17 @@ fr_api = FlightRadar24API()
 
 API_KEY = os.getenv("SERVICE_API_KEY", None)
 
+
 def calculate_bounds(lat: float, lon: float, radius_km: float) -> str:
     """Calculate bounding box for search area."""
     lat_offset = radius_km / 111.0
     lon_offset = radius_km / (111.0 * cos(radians(lat)))
-    
+
     north = lat + lat_offset
     south = lat - lat_offset
     west = lon - lon_offset
     east = lon + lon_offset
-    
+
     return f"{north},{south},{west},{east}"
 
 
@@ -33,9 +33,68 @@ def validate_api_key():
     """Validate API key if configured."""
     if API_KEY is None:
         return True
-    
     provided_key = request.headers.get('X-API-Key')
     return provided_key == API_KEY
+
+
+def serialize_flight(flight):
+    """Convert FlightRadar24 flight object to a serializable dictionary."""
+    flight_data = {
+        "id": flight.id,
+        "number": flight.number,
+        "callsign": flight.callsign,
+        "icao_24bit": flight.icao_24bit,
+        "position": {
+            "latitude": flight.latitude,
+            "longitude": flight.longitude,
+            "altitude": flight.altitude,
+            "heading": flight.heading,
+            "ground_speed": flight.ground_speed,
+            "vertical_speed": flight.vertical_speed
+        },
+        "aircraft": {
+            "code": flight.aircraft_code,
+            "registration": flight.registration
+        },
+        "airline": {
+            "icao": flight.airline_icao,
+            "iata": flight.airline_iata
+        },
+        "route": {
+            "origin_iata": flight.origin_airport_iata,
+            "destination_iata": flight.destination_airport_iata
+        }
+    }
+
+    # add detailed info if available
+    if hasattr(flight, 'aircraft_model'):
+        flight_data["aircraft"]["model"] = flight.aircraft_model
+    if hasattr(flight, 'origin_airport_name'):
+        flight_data["route"]["origin_name"] = flight.origin_airport_name
+    if hasattr(flight, 'destination_airport_name'):
+        flight_data["route"]["destination_name"] = flight.destination_airport_name
+
+    return flight_data
+
+
+def parse_and_validate_params():
+    """Parse query parameters and validate them."""
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+        radius_km = float(request.args.get('radius', 10))
+
+        if not (-90 <= lat <= 90):
+            return None, None, None, jsonify({"error": "Latitude must be between -90 and 90"}), 400
+        if not (-180 <= lon <= 180):
+            return None, None, None, jsonify({"error": "Longitude must be between -180 and 180"}), 400
+        if not (1 <= radius_km <= 500):
+            return None, None, None, jsonify({"error": "Radius must be between 1 and 500 km"}), 400
+
+        return lat, lon, radius_km, None, None
+
+    except (TypeError, ValueError):
+        return None, None, None, jsonify({"error": "Invalid parameters. Required: lat, lon. Optional: radius"}), 400
 
 
 @app.route('/health', methods=['GET'])
@@ -46,227 +105,99 @@ def health_check():
 
 @app.route('/closest-flight', methods=['GET'])
 def get_closest_flight():
-    """
-    Find the closest flight to given coordinates.
-    
-    Query Parameters:
-        lat (float): Latitude
-        lon (float): Longitude
-        radius (float, optional): Search radius in km (default: 10)
-    
-    Headers (optional):
-        X-API-Key: API key for authentication
-    
-    Returns:
-        JSON with flight information or error message
-    """
+    """Find the closest flight to given coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
 
-    try:
-        lat = float(request.args.get('lat'))
-        lon = float(request.args.get('lon'))
-        radius_km = float(request.args.get('radius', 10))
-        
-        if not (-90 <= lat <= 90):
-            return jsonify({"error": "Latitude must be between -90 and 90"}), 400
-        if not (-180 <= lon <= 180):
-            return jsonify({"error": "Longitude must be between -180 and 180"}), 400
-        if not (1 <= radius_km <= 500):
-            return jsonify({"error": "Radius must be between 1 and 500 km"}), 400
-            
-    except (TypeError, ValueError):
-        return jsonify({"error": "Invalid parameters. Required: lat, lon. Optional: radius"}), 400
-    
+    lat, lon, radius_km, error_response, status = parse_and_validate_params()
+    if error_response:
+        return error_response, status
+
     try:
         bounds = calculate_bounds(lat, lon, radius_km)
-        
         flights = fr_api.get_flights(bounds=bounds)
-        
+
         if not flights:
-            return jsonify({
-                "found": False,
-                "message": "No flights found in search area"
-            }), 200
-        
+            return jsonify({"found": False, "message": "No flights found in search area"}), 200
+
         closest_flight = None
         min_distance = float('inf')
-        
+
+        class SearchPoint:
+            def __init__(self, lat, lon):
+                self.latitude = lat
+                self.longitude = lon
+
+        search_point = SearchPoint(lat, lon)
+
         for flight in flights:
-            if flight.on_ground:
+            if flight.on_ground or flight.latitude is None or flight.longitude is None:
                 continue
-            
-            if flight.latitude is None or flight.longitude is None:
-                continue
-            
-            class SearchPoint:
-                def __init__(self, lat, lon):
-                    self.latitude = lat
-                    self.longitude = lon
-            
-            search_point = SearchPoint(lat, lon)
             distance = flight.get_distance_from(search_point)
-            
             if distance < min_distance:
                 min_distance = distance
                 closest_flight = flight
-        
+
         if not closest_flight:
-            return jsonify({
-                "found": False,
-                "message": "No airborne flights found in search area"
-            }), 200
-        
+            return jsonify({"found": False, "message": "No airborne flights found in search area"}), 200
+
         try:
             flight_details = fr_api.get_flight_details(closest_flight)
             closest_flight.set_flight_details(flight_details)
         except:
             pass # proceed without detailed flight info if fetching fails
-        
+
         response = {
             "found": True,
             "distance_km": round(min_distance, 2),
-            "flight": {
-                "id": closest_flight.id,
-                "number": closest_flight.number,
-                "callsign": closest_flight.callsign,
-                "icao_24bit": closest_flight.icao_24bit,
-                "position": {
-                    "latitude": closest_flight.latitude,
-                    "longitude": closest_flight.longitude,
-                    "altitude": closest_flight.altitude,
-                    "heading": closest_flight.heading,
-                    "ground_speed": closest_flight.ground_speed,
-                    "vertical_speed": closest_flight.vertical_speed
-                },
-                "aircraft": {
-                    "code": closest_flight.aircraft_code,
-                    "registration": closest_flight.registration
-                },
-                "airline": {
-                    "icao": closest_flight.airline_icao,
-                    "iata": closest_flight.airline_iata
-                },
-                "route": {
-                    "origin_iata": closest_flight.origin_airport_iata,
-                    "destination_iata": closest_flight.destination_airport_iata
-                }
-            }
+            "flight": serialize_flight(closest_flight)
         }
-        
-        # add detailed info if available
-        if hasattr(closest_flight, 'aircraft_model'):
-            response["flight"]["aircraft"]["model"] = closest_flight.aircraft_model
-        if hasattr(closest_flight, 'origin_airport_name'):
-            response["flight"]["route"]["origin_name"] = closest_flight.origin_airport_name
-        if hasattr(closest_flight, 'destination_airport_name'):
-            response["flight"]["route"]["destination_name"] = closest_flight.destination_airport_name
-        
+
         return jsonify(response), 200
-        
+
     except Exception as e:
-        return jsonify({
-            "error": f"Server error: {str(e)}"
-        }), 500
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 
 @app.route('/flights-in-radius', methods=['GET'])
 def get_flights_in_radius():
+    """Find all flights within a given radius of coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
 
-    try:
-        lat = float(request.args.get('lat'))
-        lon = float(request.args.get('lon'))
-        radius_km = float(request.args.get('radius', 10))
-
-        if not (-90 <= lat <= 90):
-            return jsonify({"error": "Latitude must be between -90 and 90"}), 400
-        if not (-180 <= lon <= 180):
-            return jsonify({"error": "Longitude must be between -180 and 180"}), 400
-        if not (1 <= radius_km <= 500):
-            return jsonify({"error": "Radius must be between 1 and 500 km"}), 400
-
-    except (TypeError, ValueError):
-        return jsonify({"error": "Invalid parameters. Required: lat, lon. Optional: radius"}), 400
+    lat, lon, radius_km, error_response, status = parse_and_validate_params()
+    if error_response:
+        return error_response, status
 
     try:
         bounds = calculate_bounds(lat, lon, radius_km)
         flights = fr_api.get_flights(bounds=bounds)
 
         if not flights:
-            return jsonify({
-                "found": False,
-                "message": "No flights found in search area"
-            }), 200
+            return jsonify({"found": False, "message": "No flights found in search area"}), 200
 
-        response = {
-            "found": True,
-            "flights": []
-        }
+        response = {"found": True, "flights": []}
 
         for flight in flights:
-            if flight.on_ground:  # Skip grounded flights
-                continue
-
-            if flight.latitude is None or flight.longitude is None:
+            if flight.on_ground or flight.latitude is None or flight.longitude is None:
                 continue
 
             try:
                 flight_details = fr_api.get_flight_details(flight)
                 flight.set_flight_details(flight_details)
             except:
-                pass  # Proceed without detailed flight info if fetching fails
+                pass # proceed without detailed flight info if fetching fails
 
-            flight_data = {
-                "id": flight.id,
-                "number": flight.number,
-                "callsign": flight.callsign,
-                "icao_24bit": flight.icao_24bit,
-                "position": {
-                    "latitude": flight.latitude,
-                    "longitude": flight.longitude,
-                    "altitude": flight.altitude,
-                    "heading": flight.heading,
-                    "ground_speed": flight.ground_speed,
-                    "vertical_speed": flight.vertical_speed
-                },
-                "aircraft": {
-                    "code": flight.aircraft_code,
-                    "registration": flight.registration
-                },
-                "airline": {
-                    "icao": flight.airline_icao,
-                    "iata": flight.airline_iata
-                },
-                "route": {
-                    "origin_iata": flight.origin_airport_iata,
-                    "destination_iata": flight.destination_airport_iata
-                }
-            }
+            response["flights"].append(serialize_flight(flight))
 
-            # Add detailed info if available
-            if hasattr(flight, 'aircraft_model'):
-                flight_data["aircraft"]["model"] = flight.aircraft_model
-            if hasattr(flight, 'origin_airport_name'):
-                flight_data["route"]["origin_name"] = flight.origin_airport_name
-            if hasattr(flight, 'destination_airport_name'):
-                flight_data["route"]["destination_name"] = flight.destination_airport_name
-
-            response["flights"].append(flight_data)
-
-        # If no flights were added (e.g., all were grounded), return "not found"
         if not response["flights"]:
-            return jsonify({
-                "found": False,
-                "message": "No airborne flights found in search area"
-            }), 200
+            return jsonify({"found": False, "message": "No airborne flights found in search area"}), 200
 
         return jsonify(response), 200
 
     except Exception as e:
-        return jsonify({
-            "error": f"Server error: {str(e)}"
-        }), 500
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 
 @app.route('/', methods=['GET'])
 def index():
@@ -275,10 +206,7 @@ def index():
         "service": "Flight Finder API",
         "version": "1.0",
         "endpoints": {
-            "/health": {
-                "method": "GET",
-                "description": "Health check"
-            },
+            "/health": {"method": "GET", "description": "Health check"},
             "/closest-flight": {
                 "method": "GET",
                 "description": "Find closest flight to coordinates",
