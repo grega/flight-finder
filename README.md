@@ -161,7 +161,7 @@ This works similarly to the `/closest-flight` endpoint but returns all flights w
 curl "http://localhost:7478/flights-in-radius?lat=37.7749&lon=-122.4194&radius=25"
 ```
 
-The response contains a `flights` array containing all flights within the specified radius (each `flight` object has the same structure as in the `/closest-flight` response).
+The response is a `flights` array containing all flights within the specified radius (each `flight` object has the same structure as in the `/closest-flight` response, see above).
 
 ## API Endpoints
 
@@ -189,10 +189,6 @@ Query Parameters:
 
 Headers:
 - `X-API-Key` (optional): API key, if authentication is enabled / required
-
-Here’s the documentation for your **`/flights-in-radius`** endpoint, styled to match the format of your existing `/closest-flight` documentation:
-
----
 
 ### `GET /flights-in-radius`
 
