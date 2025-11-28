@@ -20,8 +20,7 @@ There's also an [example Python script](examples/python-aircraft-monitor) for mo
 
 ### Prerequisites
 
-- Python 3.8 or higher
-- pip
+- [asdf](https://asdf-vm.com/guide/getting-started.html)
  
 ### Installation
 
