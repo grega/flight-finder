@@ -64,7 +64,7 @@ def network_connect(ssid, password):
     display.set_pen(BLACK)
     display.clear()
     display.set_pen(WHITE)
-    display.text("Connecting to WiFi...", 2, 2, WIDTH, 1)
+    display.text(f"Connecting to WiFi SSID: {ssid}", 2, 2, WIDTH, 1)
     i75.update()
 
     wlan.connect(ssid, password)
@@ -80,9 +80,10 @@ def network_connect(ssid, password):
 
     if wlan.status() != 3:
         print("Failed to connect to WiFi")
-        display.set_pen(RED)
+        display.set_pen(BLACK)
         display.clear()
-        display.text("WiFi Err", 2, 2, WIDTH, 1)
+        display.set_pen(RED)
+        display.text(f"WiFi Error SSID: {ssid}", 2, 2, WIDTH, 1)
         i75.update()
         return False
     else:
