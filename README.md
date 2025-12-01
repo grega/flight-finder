@@ -10,12 +10,17 @@ https://blog.gregdev.com/posts/2025-11-19-flight-finder-display
 
 ![ff-display-1](https://github.com/user-attachments/assets/16e42d57-3e22-4852-b11e-56f426f2234e)
 
+***
+
+There's also an [example Python script](examples/python-aircraft-monitor) for monitoring nearby aircraft by type, and alerting if certain conditions are met.
+
+***
+
 ## Quick Start
 
 ### Prerequisites
 
-- Python 3.8 or higher
-- pip
+- [asdf](https://asdf-vm.com/guide/getting-started.html)
  
 ### Installation
 
