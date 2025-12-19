@@ -27,3 +27,34 @@ Once connected to the I75 device:
     FLIGHT_FINDER_API_KEY = ""
     ```
   Run the `flight_display.py` script to start displaying flights
+
+
+## Emulator
+
+This emulator allows testing of the `flight_display.py` Micropython code without needing to connect to the actual Interstate75 hardware.
+
+```bash
+python3 emulator.py
+```
+
+### Test Flight Data
+
+The emulator loads test data from `test_flight_data.json`. Create and edit this file to test different scenarios:
+
+```json
+{
+  "found": true,
+  "distance_km": 5.2,
+  "flight": {
+    "number": "BA123",
+    "aircraft": {
+      "model": "Airbus A320-232"
+    },
+    "route": {
+      "origin_iata": "LHR",
+      "destination_iata": "CDG"
+    }
+  }
+}
+
+If nothing is displayed / the emulator quits, check the "quiet time" settings in `flight_display.py` to ensure the current time is outside of the configured quiet period.
