@@ -56,5 +56,6 @@ The emulator loads test data from `test_flight_data.json`. Create and edit this 
     }
   }
 }
+```
 
 If nothing is displayed / the emulator quits, check the "quiet time" settings in `flight_display.py` to ensure the current time is outside of the configured quiet period.
