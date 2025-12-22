@@ -1,6 +1,6 @@
 # Flight Finder Service
 
-A Flask-based REST API service that finds the closest aircraft to given coordinates using FlightRadar24 data.
+A Flask-based API that finds the closest aircraft to given coordinates using FlightRadar24 data.
 
 The service was designed to be consumed by lower-power WiFi-enabled devices (eg. Raspberry Pi Pico 2 W) hooked up to a display of sorts in order to show nearby flight data.
 
