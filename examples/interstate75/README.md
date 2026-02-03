@@ -37,6 +37,9 @@ This emulator allows testing of the `flight_display.py` Micropython code without
 python3 emulator.py
 ```
 
+<img width="468" height="319" alt="emulator" src="https://github.com/user-attachments/assets/8395d392-4acb-4cdf-810b-b613bb94ac06" />
+
+
 ### Test Flight Data
 
 The emulator loads test data from `test_flight_data.json`. Create and edit this file to test different scenarios:
