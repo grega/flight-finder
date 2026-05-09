@@ -5,27 +5,13 @@ Web service for finding closest flights using FlightRadarAPI
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from FlightRadar24 import FlightRadar24API
-from FlightRadar24.core import Core
 from math import radians, cos
 import os
 
 load_dotenv()
 
-# FR24's bot detection 403s the FlightRadar24 library's default header bundle
-# (stale Chrome/87 UA, all-lowercase keys, sec-fetch-* + origin/referer combo)
-# on the clickhandler endpoint, which is what populates aircraft_model and
-# airport names. A minimal Title-Cased header set passes.
-_MODERN_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
-Core.headers.clear()
-Core.headers.update({"User-Agent": _MODERN_UA})
-Core.json_headers.clear()
-Core.json_headers.update({"User-Agent": _MODERN_UA, "Accept": "application/json"})
-
 app = Flask(__name__)
-fr_api = FlightRadar24API()
+fr_api = FlightRadar24API(proxy_url=os.getenv("FR24_PROXY_URL"))
 
 API_KEY = os.getenv("SERVICE_API_KEY", None)
 
@@ -158,8 +144,9 @@ def get_closest_flight():
         try:
             flight_details = fr_api.get_flight_details(closest_flight)
             closest_flight.set_flight_details(flight_details)
-        except:
-            pass # proceed without detailed flight info if fetching fails
+        except Exception as e:
+            # proceed without detailed flight info if fetching fails (eg. proxy outage)
+            app.logger.warning("get_flight_details failed for %s: %s", closest_flight.id, e)
 
         response = {
             "found": True,
@@ -199,8 +186,9 @@ def get_flights_in_radius():
             try:
                 flight_details = fr_api.get_flight_details(flight)
                 flight.set_flight_details(flight_details)
-            except:
-                pass # proceed without detailed flight info if fetching fails
+            except Exception as e:
+                # proceed without detailed flight info if fetching fails (eg. proxy outage)
+                app.logger.warning("get_flight_details failed for %s: %s", flight.id, e)
 
             response["flights"].append(serialize_flight(flight))
 
