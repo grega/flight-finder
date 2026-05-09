@@ -1,0 +1,14 @@
+{
+  "found": true,
+  "distance_km": 5.2,
+  "flight": {
+    "number": "BA123",
+    "aircraft": {
+      "model": "Airbus A320-232"
+    },
+    "route": {
+      "origin_iata": "LHR",
+      "destination_iata": "CDG"
+    }
+  }
+}

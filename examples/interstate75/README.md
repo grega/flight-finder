@@ -42,7 +42,7 @@ python3 emulator.py
 
 ### Test Flight Data
 
-The emulator loads test data from `test_flight_data.json`. Create and edit this file to test different scenarios:
+The emulator loads test data from `test_flight_data.json`. Edit this file to test different scenarios:
 
 ```json
 {
