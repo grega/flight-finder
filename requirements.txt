@@ -1,4 +1,4 @@
-Flask==3.1.2
+Flask==3.1.3
 FlightRadarAPI==1.4.2
 # FlightRadarAPI 1.4.2 imports bs4 (api.py) without declaring it in
 # package metadata - add explicitly until upstream fixes
