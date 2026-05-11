@@ -4,5 +4,5 @@ FlightRadarAPI==1.4.2
 # package metadata - add explicitly until upstream fixes
 beautifulsoup4
 gunicorn==23.0.0
-pytest==9.0.0
+pytest==9.0.3
 python-dotenv>=1.2.1
