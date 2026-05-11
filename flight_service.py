@@ -11,7 +11,7 @@ import os
 load_dotenv()
 
 app = Flask(__name__)
-fr_api = FlightRadar24API(proxy_url=os.getenv("FR24_PROXY_URL"))
+fr_api = FlightRadar24API()
 
 API_KEY = os.getenv("SERVICE_API_KEY", None)
 

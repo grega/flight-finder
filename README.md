@@ -43,16 +43,13 @@ There's also an [example Python script](examples/python-aircraft-monitor) for mo
    pip install -r requirements.txt
    ```
 
-4. Deploy the Cloudflare Worker proxy that FlightRadar24 access depends on. See [FlightRadar24 access (Cloudflare Worker proxy)](#flightradar24-access-cloudflare-worker-proxy) below - without it, flight-detail fields (`aircraft.model`, airport names) won't be returned.
-
-5. Configure your `.env` file with the Worker URL from the previous step, plus an optional API key:
+4. Configure an API key in a `.env` file to enable optional authentication:
 
    ```bash
-   FR24_PROXY_URL=https://fr24-proxy.<your-subdomain>.workers.dev/?url=
    SERVICE_API_KEY=
    ```
 
-6. Run the development server:
+5. Run the development server:
 
    ```bash
    python flight_service.py
@@ -60,74 +57,11 @@ There's also an [example Python script](examples/python-aircraft-monitor) for mo
 
    The service will start on: http://0.0.0.0:7478
 
-7. Run the tests:
+6. Run the tests:
 
    ```bash
    pytest
    ```
-
-## FlightRadar24 access (Cloudflare Worker proxy)
-
-Around 2026-05-01, FlightRadar24 deployed Cloudflare bot protection with TLS fingerprinting on the undocumented JSON endpoints this service uses. The unmaintained upstream [JeanExtreme002/FlightRadarAPI](https://github.com/JeanExtreme002/FlightRadarAPI) library now receives `403 Forbidden` on the `clickhandler` endpoint - the one that supplies `aircraft.model`, `route.origin_name`, and `route.destination_name`. See upstream [issue #98](https://github.com/JeanExtreme002/FlightRadarAPI/issues/98) for context. User-Agent or header tweaks won't get past TLS fingerprinting.
-
-The workaround is the [DimaD16/FlightRadarAPI](https://github.com/DimaD16/FlightRadarAPI) fork (PyPI: `ddima16-flightradarapi`), which routes requests through a Cloudflare Worker you deploy yourself. From CF's edge the request originates inside Cloudflare's network and isn't fingerprinted as a bot.
-
-### 1. Deploy the Cloudflare Worker
-
-The Worker source lives at [DimaD16/cloudflare-workers-fr24-proxy](https://github.com/DimaD16/cloudflare-workers-fr24-proxy). It's a ~30-line script that takes a `?url=<target>` query parameter, forwards the request to FR24 with a recent Chrome User-Agent and `X-Requested-With: com.flightradar24.iphone`, and returns the response.
-
-```bash
-git clone https://github.com/DimaD16/cloudflare-workers-fr24-proxy.git
-cd cloudflare-workers-fr24-proxy
-npx wrangler login        # one-time browser auth with Cloudflare
-npx wrangler deploy
-```
-
-Wrangler prints the deployed URL on success, eg. `https://fr24-proxy.<your-subdomain>.workers.dev`. You'll use this in step 3.
-
-The Cloudflare Workers free tier allows 100,000 requests/day, far more than this service needs.
-
-> **Security note:** the Worker as published is an **open relay** - anyone with the URL can use it to fetch arbitrary URLs (the `?url=` parameter isn't restricted to FR24 hosts, and there's no authentication). Before exposing the URL anywhere public, consider hardening it:
-> - Restrict the target host to FR24 domains in `worker.js` (eg. `if (!new URL(targetUrl).hostname.endsWith("flightradar24.com")) return new Response("Forbidden", { status: 403 });`).
-> - Optionally require a shared-secret header that the Worker checks before proxying.
-
-### 2. Swap the library
-
-In [requirements.txt](requirements.txt), replace:
-
-```
-FlightRadarAPI==1.3.15
-```
-
-with:
-
-```
-ddima16-flightradarapi
-```
-
-Then reinstall:
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Set `FR24_PROXY_URL`
-
-Add the Worker URL to `.env`. **Note the trailing `/?url=`** - the library appends FR24 URLs to this string:
-
-```bash
-FR24_PROXY_URL=https://fr24-proxy.<your-subdomain>.workers.dev/?url=
-```
-
-### 4. Verify
-
-Restart the service and hit `/closest-flight` with a busy area - `aircraft.model` and `route.origin_name` / `route.destination_name` should populate when a flight is found:
-
-```bash
-curl "http://localhost:7478/closest-flight?lat=33.0118884&lon=-97.0558339&radius=25"
-```
-
-If the Worker is misconfigured the service still returns the basic feed fields (number, IATA codes, registration) but silently drops the detail fields - the `try/except` around `get_flight_details` in `flight_service.py` swallows proxy errors. Check `wrangler tail` while running a request to confirm the Worker is being hit.
 
 ## Usage
 
@@ -285,6 +219,6 @@ This README covers development setup. For production deployments, see the deploy
 
 ## Data Source
 
-This service uses data from [FlightRadar24](https://www.flightradar24.com/) via the unofficial [DimaD16/FlightRadarAPI](https://github.com/DimaD16/FlightRadarAPI) fork (PyPI: `ddima16-flightradarapi`), routed through a self-hosted Cloudflare Worker proxy. The original [JeanExtreme002/FlightRadarAPI](https://github.com/JeanExtreme002/FlightRadarAPI) is no longer functional against FR24's Cloudflare-protected endpoints - see the [FlightRadar24 access](#flightradar24-access-cloudflare-worker-proxy) section above for setup and context.
+This service uses data from [FlightRadar24](https://www.flightradar24.com/) via the unofficial [FlightRadarAPI](https://github.com/JeanExtreme002/FlightRadarAPI) library.
 
 **Important:** This service is for educational and personal use only. For commercial use, contact [business@fr24.com](mailto:business@fr24.com) or use the [official FlightRadar24 API](https://fr24api.flightradar24.com/).

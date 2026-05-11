@@ -28,7 +28,6 @@ If you want to add API key authentication:
 
 ```bash
 dokku config:set flight-finder SERVICE_API_KEY=your_secret_key_here
-dokku config:set flight-finder FR24_PROXY_URL=https://fr24-proxy.<your-subdomain>.workers.dev/?url=
 ```
 
 ### 4. Deploy from your local machine

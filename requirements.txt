@@ -1,5 +1,8 @@
 Flask==3.1.2
-ddima16-flightradarapi==1.4.7
+FlightRadarAPI==1.4.1
+# FlightRadarAPI 1.4.1 imports curl_cffi for Chrome TLS impersonation but does
+# not declare it in its package metadata - add explicitly until upstream fixes.
+curl_cffi>=0.10
 gunicorn==23.0.0
 pytest==9.0.0
 python-dotenv>=1.2.1
