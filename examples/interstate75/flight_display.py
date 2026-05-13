@@ -32,9 +32,6 @@ display.set_font("bitmap8")
 # the flight number and the distance/altitude value on line 2)
 SEGMENT_GAP = 4
 
-#############
-# Functions #
-#############
 def clear_display():
     """Clear the display / turn it off"""
     display.set_pen(BLACK)
