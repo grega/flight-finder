@@ -18,6 +18,7 @@ SCROLL_SPEED_PX_PER_SEC = 10 # marquee speed when a line overflows the display
 LATITUDE                = 51.5274575 # lat of display location
 LONGITUDE               = -0.2595316 # lon of display location
 RADIUS                  = 10 # km, for finding flights (from lat/lon)
+ALTITUDE_CEILING_FT     = None # ft, ignore flights above this altitude (eg. 10000 to exclude cruise overflights). Set to None for no ceiling.
 REFRESH_INTERVAL        = 60 # seconds, best to keep this at 30s or more
 USER_AGENT_ID           = "Flight Tracker 1" # ID used as part of user-agent header in requests to API, eg. "I75 Matrix Display {USER_AGENT_ID}" (useful for identifying the devices making requests)
 

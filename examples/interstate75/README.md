@@ -20,7 +20,7 @@ Once connected to the I75 device:
     - Set `DISPLAY_TYPE` and `COLOR_ORDER` to match your panel - see [Display panel configuration](#display-panel-configuration) below
     - Optionally adjust the quiet time settings (show nothing on the display between these times)
       - Be sure to set `UTC_OFFSET` to correctly calculate quiet time based on your timezone
-    - Other options include `SHOW_ALTITUDE` (cycles altitude alongside distance), `DISTANCE_UNIT`, `ALTITUDE_UNIT`, and scroll/refresh timing
+    - Other options include `SHOW_ALTITUDE` (cycles altitude alongside distance), `DISTANCE_UNIT`, `ALTITUDE_UNIT`, `ALTITUDE_CEILING_FT` (ignore flights above this altitude — useful to filter out cruise overflights and focus on flights arriving/departing nearby airports), and scroll/refresh timing
   - Create a `secrets.py` file containing:
 
     ```python

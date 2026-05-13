@@ -110,6 +110,8 @@ def fetch_flight_data(api_key):
     """Fetch closest flight data from the API"""
     try:
         url = f"{API_URL}/closest-flight?lat={LATITUDE}&lon={LONGITUDE}&radius={RADIUS}"
+        if ALTITUDE_CEILING_FT is not None:
+            url += f"&max_altitude={ALTITUDE_CEILING_FT}"
         
         headers = {
             "X-API-Key": api_key,
@@ -191,11 +193,11 @@ def display_flight_data(data):
     # extract data
     flight = data.get("flight", {})
     flight_number = data.get("flight", {}).get("number") or "N/A"
-    aircraft_model = shorten_aircraft_model(flight.get("aircraft", {}).get("model", "N/A"))
+    aircraft_model = shorten_aircraft_model(flight.get("aircraft", {}).get("model") or "N/A")
     distance_km = round_value(data.get("distance_km", {}))
     distance = round_value(distance_km * distance_modifier)
-    origin = flight.get("route", {}).get("origin_iata", "N/A")
-    destination = flight.get("route", {}).get("destination_iata", "N/A")
+    origin = flight.get("route", {}).get("origin_iata") or "N/A"
+    destination = flight.get("route", {}).get("destination_iata") or "N/A"
     
     # display the flight info...
     # line 1: origin > destination

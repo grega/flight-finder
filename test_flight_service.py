@@ -48,7 +48,9 @@ def test_api_key_valid(client, monkeypatch):
     "lat=91&lon=0",
     "lat=0&lon=181",
     "lat=0&lon=0&radius=0",
-    "lat=0&lon=0&radius=9999"
+    "lat=0&lon=0&radius=9999",
+    "lat=0&lon=0&max_altitude=-1",
+    "lat=0&lon=0&max_altitude=abc",
 ])
 def test_invalid_parameters(client, query):
     response = client.get(f"/closest-flight?{query}")
@@ -130,6 +132,48 @@ def test_internal_error_handling(mock_api, client):
     assert response.status_code == 500
     assert "Server error" in response.get_json()["error"]
 
+
+@patch("flight_service.fr_api")
+def test_closest_flight_max_altitude_filter(mock_api, client):
+    """Flights above max_altitude should be skipped when picking the closest."""
+    low = DummyFlight(flight_id="LOW")
+    low.altitude = 5000
+    high = DummyFlight(flight_id="HIGH")
+    high.altitude = 35000
+    mock_api.get_flights.return_value = [high, low]
+    mock_api.get_flight_details.return_value = {"origin": "London", "destination": "Paris"}
+
+    # ceiling above both: either could be returned (same mock distance) — just verify success
+    response = client.get("/closest-flight?lat=10&lon=20&max_altitude=40000")
+    assert response.status_code == 200
+    assert response.get_json()["found"] is True
+
+    # ceiling between the two: only LOW remains as a candidate
+    response = client.get("/closest-flight?lat=10&lon=20&max_altitude=10000")
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["found"] is True
+    assert data["flight"]["id"] == "LOW"
+
+    # ceiling below both: no candidates left
+    response = client.get("/closest-flight?lat=10&lon=20&max_altitude=1000")
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["found"] is False
+
+
+@patch("flight_service.fr_api")
+def test_closest_flight_max_altitude_skips_unknown(mock_api, client):
+    """When max_altitude is set, flights with unknown altitude (None) are skipped."""
+    unknown = DummyFlight(flight_id="UNKNOWN")
+    unknown.altitude = None
+    mock_api.get_flights.return_value = [unknown]
+
+    response = client.get("/closest-flight?lat=10&lon=20&max_altitude=40000")
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["found"] is False
+
 @patch("flight_service.fr_api")
 def test_flights_in_radius_found(mock_api, client):
     """Test that the endpoint returns all flights in the radius."""
@@ -210,11 +254,31 @@ def test_flights_in_radius_with_api_key(mock_api, client, monkeypatch):
     "lat=91&lon=0",
     "lat=0&lon=181",
     "lat=0&lon=0&radius=0",
-    "lat=0&lon=0&radius=9999"
+    "lat=0&lon=0&radius=9999",
+    "lat=0&lon=0&max_altitude=-1",
+    "lat=0&lon=0&max_altitude=abc",
 ])
 def test_flights_in_radius_invalid_parameters(client, query):
     """Test that the endpoint validates parameters."""
     response = client.get(f"/flights-in-radius?{query}")
     assert response.status_code == 400
     assert "error" in response.get_json()
+
+
+@patch("flight_service.fr_api")
+def test_flights_in_radius_max_altitude_filter(mock_api, client):
+    """Flights above max_altitude should be excluded from the results."""
+    low = DummyFlight(flight_id="LOW")
+    low.altitude = 5000
+    high = DummyFlight(flight_id="HIGH")
+    high.altitude = 35000
+    mock_api.get_flights.return_value = [low, high]
+    mock_api.get_flight_details.return_value = {"origin": "London", "destination": "Paris"}
+
+    response = client.get("/flights-in-radius?lat=10&lon=20&max_altitude=10000")
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["found"] is True
+    assert len(data["flights"]) == 1
+    assert data["flights"][0]["id"] == "LOW"
 

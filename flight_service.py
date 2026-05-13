@@ -84,17 +84,22 @@ def parse_and_validate_params():
         lon = float(request.args.get('lon'))
         radius_km = float(request.args.get('radius', 10))
 
-        if not (-90 <= lat <= 90):
-            return None, None, None, jsonify({"error": "Latitude must be between -90 and 90"}), 400
-        if not (-180 <= lon <= 180):
-            return None, None, None, jsonify({"error": "Longitude must be between -180 and 180"}), 400
-        if not (1 <= radius_km <= 500):
-            return None, None, None, jsonify({"error": "Radius must be between 1 and 500 km"}), 400
+        max_altitude_raw = request.args.get('max_altitude')
+        max_altitude_ft = float(max_altitude_raw) if max_altitude_raw is not None else None
 
-        return lat, lon, radius_km, None, None
+        if not (-90 <= lat <= 90):
+            return None, None, None, None, jsonify({"error": "Latitude must be between -90 and 90"}), 400
+        if not (-180 <= lon <= 180):
+            return None, None, None, None, jsonify({"error": "Longitude must be between -180 and 180"}), 400
+        if not (1 <= radius_km <= 500):
+            return None, None, None, None, jsonify({"error": "Radius must be between 1 and 500 km"}), 400
+        if max_altitude_ft is not None and max_altitude_ft < 0:
+            return None, None, None, None, jsonify({"error": "max_altitude must be non-negative"}), 400
+
+        return lat, lon, radius_km, max_altitude_ft, None, None
 
     except (TypeError, ValueError):
-        return None, None, None, jsonify({"error": "Invalid parameters. Required: lat, lon. Optional: radius"}), 400
+        return None, None, None, None, jsonify({"error": "Invalid parameters. Required: lat, lon. Optional: radius, max_altitude"}), 400
 
 
 @app.route('/health', methods=['GET'])
@@ -109,7 +114,7 @@ def get_closest_flight():
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
 
-    lat, lon, radius_km, error_response, status = parse_and_validate_params()
+    lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:
         return error_response, status
 
@@ -132,6 +137,8 @@ def get_closest_flight():
 
         for flight in flights:
             if flight.on_ground or flight.latitude is None or flight.longitude is None:
+                continue
+            if max_altitude_ft is not None and (flight.altitude is None or flight.altitude > max_altitude_ft):
                 continue
             distance = flight.get_distance_from(search_point)
             if distance < min_distance:
@@ -166,7 +173,7 @@ def get_flights_in_radius():
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
 
-    lat, lon, radius_km, error_response, status = parse_and_validate_params()
+    lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:
         return error_response, status
 
@@ -181,6 +188,8 @@ def get_flights_in_radius():
 
         for flight in flights:
             if flight.on_ground or flight.latitude is None or flight.longitude is None:
+                continue
+            if max_altitude_ft is not None and (flight.altitude is None or flight.altitude > max_altitude_ft):
                 continue
 
             try:
@@ -215,9 +224,10 @@ def index():
                 "parameters": {
                     "lat": "Latitude (required, -90 to 90)",
                     "lon": "Longitude (required, -180 to 180)",
-                    "radius": "Search radius in km (optional, default 10, max 500)"
+                    "radius": "Search radius in km (optional, default 10, max 500)",
+                    "max_altitude": "Altitude ceiling in feet (optional, non-negative). Flights above this altitude are ignored."
                 },
-                "example": "/closest-flight?lat=37.7749&lon=-122.4194&radius=10"
+                "example": "/closest-flight?lat=37.7749&lon=-122.4194&radius=10&max_altitude=10000"
             },
             "/flights-in-radius": {
                 "method": "GET",
@@ -225,9 +235,10 @@ def index():
                 "parameters": {
                     "lat": "Latitude (required, -90 to 90)",
                     "lon": "Longitude (required, -180 to 180)",
-                    "radius": "Search radius in km (optional, default 10, max 500)"
+                    "radius": "Search radius in km (optional, default 10, max 500)",
+                    "max_altitude": "Altitude ceiling in feet (optional, non-negative). Flights above this altitude are ignored."
                 },
-                "example": "/flights-in-radius?lat=37.7749&lon=-122.4194&radius=10"
+                "example": "/flights-in-radius?lat=37.7749&lon=-122.4194&radius=10&max_altitude=10000"
             }
         }
     }), 200
