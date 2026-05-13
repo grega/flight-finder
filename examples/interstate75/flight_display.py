@@ -257,7 +257,7 @@ def compute_scroll_offset(elapsed_ms, line_pixel_width):
     edge, pause again, then loop. Returns 2 (no scroll) if the line fits within
     the display. Shared by line 2 and line 3.
     """
-    if line_pixel_width < WIDTH:
+    if not SCROLL_ENABLED or line_pixel_width < WIDTH:
         return 2
 
     scroll_distance = line_pixel_width - WIDTH + 2 # end with last char at the right edge
