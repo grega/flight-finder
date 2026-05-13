@@ -17,7 +17,7 @@ Once connected to the I75 device:
   - Edit `config.py`:
     - Set `API_URL` to the deployed Flight Finder Service
     - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
-    - Set `DISPLAY_TYPE` and `COLOR_ORDER` to match your panel — see [Display panel configuration](#display-panel-configuration) below
+    - Set `DISPLAY_TYPE` and `COLOR_ORDER` to match your panel - see [Display panel configuration](#display-panel-configuration) below
     - Optionally adjust the quiet time settings (show nothing on the display between these times)
       - Be sure to set `UTC_OFFSET` to correctly calculate quiet time based on your timezone
     - Other options include `SHOW_ALTITUDE` (cycles altitude alongside distance), `DISTANCE_UNIT`, `ALTITUDE_UNIT`, and scroll/refresh timing

@@ -153,6 +153,16 @@ def round_value(value):
         return round(value, 1) # 1 decimal place
     else:
         return value # zero or negative, return as-is
+
+def format_altitude_ft(altitude_ft):
+    """Format altitude in feet as a compact 'Nk ft' (>= 10k) or 'N.Nk ft' (< 10k) string.
+
+    Keeps line 2 short enough to typically fit even when paired with a flight number,
+    avoiding the need to scroll long altitudes like '37000ft'.
+    """
+    if altitude_ft >= 10000:
+        return f"{round(altitude_ft / 1000)}k ft"
+    return f"{altitude_ft / 1000:.1f}k ft"
     
 def display_flight_data(data):
     """Display flight data on the screen"""
@@ -194,16 +204,15 @@ def display_flight_data(data):
 
     altitude_ft = flight.get("position", {}).get("altitude", 0)
     if ALTITUDE_UNIT == "m":
-        altitude_value = round_value(altitude_ft * 0.3048)
+        altitude_text = f"{round_value(altitude_ft * 0.3048)}m"
     else:
-        altitude_value = round_value(altitude_ft)
+        altitude_text = format_altitude_ft(altitude_ft)
 
     # line 2: flight number, then distance (cycled with altitude by main loop if SHOW_ALTITUDE)
     display.set_pen(CYAN)
     display.text(f"{flight_number}", 2, 13, WIDTH, 1)
     flight_pixel_width = len(flight_number) * 6 # 6 is the character width for bitmap8
     distance_text = f"{distance}{unit}"
-    altitude_text = f"{altitude_value}{ALTITUDE_UNIT}"
     display.set_pen(BLUE)
     display.text(distance_text, flight_pixel_width, 13, 100, 1)
 
@@ -222,31 +231,32 @@ def display_flight_data(data):
         "model_pixel_width": model_pixel_width,
     }
 
-def draw_line2_value(text, color, x_offset):
-    """Redraw the right-hand value on line 2 (clears previous text first)."""
-    display.set_pen(BLACK)
-    display.rectangle(x_offset, 13, WIDTH - x_offset, 8)
-    display.set_pen(color)
-    display.text(text, x_offset, 13, 100, 1)
+def draw_scrolling_line(y, segments, x_offset):
+    """Render a multi-color line at vertical position y, with text starting at x_offset.
 
-def draw_line3(text, x_offset):
-    """Redraw line 3 (aircraft model) at the given x offset; clears the row first."""
+    segments: list of (text, color) tuples drawn left-to-right; the cursor advances
+    by measure_text() after each segment. The whole row is cleared first. Shared by
+    line 2 (flight number + distance/altitude) and line 3 (aircraft model).
+    """
     display.set_pen(BLACK)
-    display.rectangle(0, 23, WIDTH, 9)
-    display.set_pen(MAGENTA)
-    display.text(text, x_offset, 23, 1000, 1)
+    display.rectangle(0, y, WIDTH, 9)
+    cursor_x = x_offset
+    for text, color in segments:
+        display.set_pen(color)
+        display.text(text, cursor_x, y, 1000, 1)
+        cursor_x += display.measure_text(text, 1)
 
-def line3_scroll_offset(elapsed_ms, model_pixel_width):
-    """Compute the x offset for line 3 marquee scrolling.
+def compute_scroll_offset(elapsed_ms, line_pixel_width):
+    """Compute the x offset for marquee scrolling of any line.
 
     Cycle: pause at left, scroll left until the end is visible at the right
-    edge, pause again, then loop. Returns 2 (no scroll) if the model is
-    narrower than the display.
+    edge, pause again, then loop. Returns 2 (no scroll) if the line fits within
+    the display. Shared by line 2 and line 3.
     """
-    if model_pixel_width < WIDTH:
+    if line_pixel_width < WIDTH:
         return 2
 
-    scroll_distance = model_pixel_width - WIDTH + 2 # end with last char at the right edge
+    scroll_distance = line_pixel_width - WIDTH + 2 # end with last char at the right edge
     scroll_duration_ms = scroll_distance * 1000 // SCROLL_SPEED_PX_PER_SEC
     cycle_ms = SCROLL_PAUSE_MS * 2 + scroll_duration_ms
     t = elapsed_ms % cycle_ms
