@@ -158,14 +158,21 @@ class MockDisplay:
                 if 0 <= px < self.width and 0 <= py < self.height:
                     self.buffer[py][px] = ('█', self.current_pen)
 
+    def measure_text(self, text, scale):
+        """Return the rendered width of `text` (matching this emulator's char spacing)."""
+        return len(str(text)) * 4
+
 class MockInterstate75:
     COLOR_ORDER_RGB = 0
     COLOR_ORDER_GRB = 1
-    
+
     def __init__(self, display, color_order):
-        self.display = MockDisplay(64, 32)
+        # display is one of the Interstate75Module.DISPLAY_INTERSTATE75_* constants below;
+        # mirror the dimensions the real library would report so layouts test faithfully.
+        height = 64 if display == 1 else 32
+        self.display = MockDisplay(64, height)
         self.width = 64
-        self.height = 32
+        self.height = height
         self.color_order = color_order
         
     def update(self):
@@ -215,8 +222,9 @@ sys.modules['urequests'] = MockUrequests()
 # mock the Interstate75 module
 class Interstate75Module:
     DISPLAY_INTERSTATE75_64X32 = 0
+    DISPLAY_INTERSTATE75_64X64 = 1
     Interstate75 = MockInterstate75
-    
+
 sys.modules['interstate75'] = Interstate75Module()
 
 # now we can import and run the actual flight display code
@@ -256,13 +264,15 @@ if __name__ == "__main__":
                 flight_display.clear_display()
             else:
                 flight_data = flight_display.fetch_flight_data(Secrets.FLIGHT_FINDER_API_KEY)
-                flight_display.display_flight_data(flight_data)
-                
-                for second in range(flight_display.REFRESH_INTERVAL):
-                    progress = second / flight_display.REFRESH_INTERVAL
-                    flight_display.draw_countdown(progress)
+                cycle_info = flight_display.display_flight_data(flight_data)
+
+                start_time = time.time()
+                state = {"showing_altitude": False, "line3_offset": 2}
+                while time.time() - start_time < flight_display.REFRESH_INTERVAL:
+                    elapsed_ms = int((time.time() - start_time) * 1000)
+                    flight_display.update_dynamic_display(elapsed_ms, cycle_info, state)
                     flight_display.i75.update()
-                    time.sleep(1)
+                    time.sleep(0.1)
         
         print("\n[EMULATOR] Test complete!")
     

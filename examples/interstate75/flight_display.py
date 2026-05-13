@@ -4,38 +4,17 @@ import network
 import ntptime
 import time
 import urequests
-from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
+from interstate75 import Interstate75
 
-# the specific panel this was tested on had "RGB" values flipped to "GRB"; you might need to swap back to `COLOR_ORDER_RGB` (or another value)
-i75 = Interstate75(display=DISPLAY_INTERSTATE75_64X32, color_order=Interstate75.COLOR_ORDER_GRB)
+# config lives in config.py - edit it there to customise behaviour
+from config import *
+
+i75 = Interstate75(display=DISPLAY_TYPE, color_order=COLOR_ORDER)
 display = i75.display
 
-WIDTH  = i75.width # 64 pixels
-HEIGHT = i75.height # 32 pixels
+WIDTH  = i75.width
+HEIGHT = i75.height
 
-##########
-# Config #
-##########
-API_URL             = "https://wherever-the-flight-finder-service-is-deployed"
-BRIGHT_MODE         = False # Set to True for brighter (higher intensity) colours
-DISTANCE_UNIT       = "km" # km or mi, for display purposes only
-SHOW_ALTITUDE       = False # Set to True to cycle between distance and altitude on line 2
-ALTITUDE_UNIT       = "ft" # ft or m, for display purposes only (FR24 reports altitude in feet)
-VALUE_SWAP_INTERVAL = 5 # seconds between distance/altitude swaps when SHOW_ALTITUDE is True
-LATITUDE            = 51.5274575 # lat of display location
-LONGITUDE           = -0.2595316 # lon of display location
-RADIUS              = 10 # km, for finding flights (from lat/lon)
-REFRESH_INTERVAL    = 60 # seconds, best to keep this at 30s or more
-USER_AGENT_ID       = "Flight Tracker 1" # ID used as part of user-agent header in requests to API, eg. "I75 Matrix Display {USER_AGENT_ID}" (useful for identifying the devices making requests)
-
-# "quiet time" config (ie. show nothing on the display between these times)
-UTC_OFFSET         = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
-QUIET_START_HOUR   = 22
-QUIET_START_MINUTE = 0
-QUIET_END_HOUR     = 7
-QUIET_END_MINUTE   = 0
-
-# colours, see `color_order=Interstate75.COLOR_ORDER_GRB` above (specifically `COLOR_ORDER_GRB`)
 BLACK   = display.create_pen(0, 0, 0)
 WHITE   = display.create_pen(*((255, 255, 255) if BRIGHT_MODE else (200, 200, 200)))
 BLUE    = display.create_pen(*((64, 64, 255) if BRIGHT_MODE else (32, 32, 128)))
@@ -161,27 +140,10 @@ def fetch_flight_data(api_key):
             response.close()
 
 def shorten_aircraft_model(model):
-    """Replace long manufacturer names with shorthand versions. 
-    Remove unneeded model info
-    """
+    """Drop the variant suffix (anything after '-') for display."""
     if '-' in model:
         model = model.split('-')[0] # eg. remove "-132" from "Airbus A319-132"
-        
-    words = model.split()
-
-    if not words:
-        return model
-
-    manufacturer_shorthand = {
-        "Mitsubishi": "Mitsu",
-        "Bombardier": "Bomba"
-    }
-
-    first_word = words[0]
-    if first_word in manufacturer_shorthand:
-        words[0] = manufacturer_shorthand[first_word]
-
-    return " ".join(words)
+    return model
 
 def round_value(value):
     """Round values appropriately (depending on their magnitude) for display"""
@@ -218,7 +180,7 @@ def display_flight_data(data):
     
     # extract data
     flight = data.get("flight", {})
-    flight_number = data.get("flight", {}).get("number", "N/A")
+    flight_number = data.get("flight", {}).get("number") or "N/A"
     aircraft_model = shorten_aircraft_model(flight.get("aircraft", {}).get("model", "N/A"))
     distance_km = round_value(data.get("distance_km", {}))
     distance = round_value(distance_km * distance_modifier)
@@ -245,9 +207,10 @@ def display_flight_data(data):
     display.set_pen(BLUE)
     display.text(distance_text, flight_pixel_width, 13, 100, 1)
 
-    # line 3: aircraft model
+    # line 3: aircraft model (scrolled by main loop if it overflows the display)
     display.set_pen(MAGENTA)
-    display.text(f"{aircraft_model}", 2, 23, 100, 1) # set word-wrap to a large value (100) so as to never wrap
+    display.text(f"{aircraft_model}", 2, 23, 1000, 1) # high word-wrap (1000) so long names never wrap; main loop scrolls them
+    model_pixel_width = display.measure_text(aircraft_model, 1)
 
     i75.update()
 
@@ -255,6 +218,8 @@ def display_flight_data(data):
         "x_offset": flight_pixel_width,
         "distance_text": distance_text,
         "altitude_text": altitude_text,
+        "model_text": aircraft_model,
+        "model_pixel_width": model_pixel_width,
     }
 
 def draw_line2_value(text, color, x_offset):
@@ -263,6 +228,36 @@ def draw_line2_value(text, color, x_offset):
     display.rectangle(x_offset, 13, WIDTH - x_offset, 8)
     display.set_pen(color)
     display.text(text, x_offset, 13, 100, 1)
+
+def draw_line3(text, x_offset):
+    """Redraw line 3 (aircraft model) at the given x offset; clears the row first."""
+    display.set_pen(BLACK)
+    display.rectangle(0, 23, WIDTH, 9)
+    display.set_pen(MAGENTA)
+    display.text(text, x_offset, 23, 1000, 1)
+
+def line3_scroll_offset(elapsed_ms, model_pixel_width):
+    """Compute the x offset for line 3 marquee scrolling.
+
+    Cycle: pause at left, scroll left until the end is visible at the right
+    edge, pause again, then loop. Returns 2 (no scroll) if the model is
+    narrower than the display.
+    """
+    if model_pixel_width < WIDTH:
+        return 2
+
+    scroll_distance = model_pixel_width - WIDTH + 2 # end with last char at the right edge
+    scroll_duration_ms = scroll_distance * 1000 // SCROLL_SPEED_PX_PER_SEC
+    cycle_ms = SCROLL_PAUSE_MS * 2 + scroll_duration_ms
+    t = elapsed_ms % cycle_ms
+
+    if t < SCROLL_PAUSE_MS:
+        return 2
+    elif t < SCROLL_PAUSE_MS + scroll_duration_ms:
+        scroll_progress_ms = t - SCROLL_PAUSE_MS
+        return 2 - (scroll_progress_ms * scroll_distance // scroll_duration_ms)
+    else:
+        return 2 - scroll_distance
 
 def draw_countdown(progress):
     """Draw a countdown progress bar in the top-right corner.
@@ -283,6 +278,31 @@ def draw_countdown(progress):
         display.set_pen(GREEN)
         display.rectangle(x + bar_width - filled_width, y, filled_width, bar_height)
     display.set_pen(BLACK)
+
+def update_dynamic_display(elapsed_ms, cycle_info, state):
+    """Per-tick update for countdown bar, line 2 altitude/distance swap, and line 3 marquee.
+
+    `state` is a dict with keys `showing_altitude` and `line3_offset` that is mutated in place.
+    Shared by the hardware main loop and the emulator so both render identically.
+    """
+    elapsed_s = elapsed_ms / 1000
+    progress = elapsed_s / REFRESH_INTERVAL
+    draw_countdown(progress)
+
+    if SHOW_ALTITUDE and cycle_info:
+        should_show_altitude = (int(elapsed_s) // VALUE_SWAP_INTERVAL) % 2 == 1
+        if should_show_altitude != state["showing_altitude"]:
+            state["showing_altitude"] = should_show_altitude
+            if should_show_altitude:
+                draw_line2_value(cycle_info["altitude_text"], ORANGE, cycle_info["x_offset"])
+            else:
+                draw_line2_value(cycle_info["distance_text"], BLUE, cycle_info["x_offset"])
+
+    if cycle_info:
+        new_line3_offset = line3_scroll_offset(elapsed_ms, cycle_info["model_pixel_width"])
+        if new_line3_offset != state["line3_offset"]:
+            state["line3_offset"] = new_line3_offset
+            draw_line3(cycle_info["model_text"], new_line3_offset)
 
 def main():
     """Main function to connect to WiFi, fetch data, and display it"""
@@ -344,24 +364,14 @@ def main():
             print(f"Displaying flight data for {REFRESH_INTERVAL} seconds...")
             cycle_info = display_flight_data(flight_data)
 
-            start_time = time.time()
-            showing_altitude = False # initial draw shows distance
-            while time.time() - start_time < REFRESH_INTERVAL:
-                elapsed = time.time() - start_time
-                progress = elapsed / REFRESH_INTERVAL
-                draw_countdown(progress)
-
-                if SHOW_ALTITUDE and cycle_info:
-                    should_show_altitude = (int(elapsed) // VALUE_SWAP_INTERVAL) % 2 == 1
-                    if should_show_altitude != showing_altitude:
-                        showing_altitude = should_show_altitude
-                        if showing_altitude:
-                            draw_line2_value(cycle_info["altitude_text"], ORANGE, cycle_info["x_offset"])
-                        else:
-                            draw_line2_value(cycle_info["distance_text"], BLUE, cycle_info["x_offset"])
-
+            start_ticks = time.ticks_ms()
+            state = {"showing_altitude": False, "line3_offset": 2}
+            refresh_interval_ms = REFRESH_INTERVAL * 1000
+            while time.ticks_diff(time.ticks_ms(), start_ticks) < refresh_interval_ms:
+                elapsed_ms = time.ticks_diff(time.ticks_ms(), start_ticks)
+                update_dynamic_display(elapsed_ms, cycle_info, state)
                 i75.update()
-                time.sleep(1)
+                time.sleep_ms(100)
 
         except Exception as e:
             print(f"Error in main loop: {e}")

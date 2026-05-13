@@ -13,12 +13,14 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
 Once connected to the I75 device:
-  - Copy the `flight_display.py` file onto the device (optionally rename it to `main.py` to run on boot)
-  - Set `API_URL` in `flight_display.py`
-  - Set the config options towards the top of `flight_display.py`, including the location `LATITUDE`, `LONGITUDE` and `RADIUS`
-  - Optionally adjust the quiet time settings in `flight_display.py` (show nothing on the display between these times)
-    - Be sure to set `UTC_OFFSET` to correctly calculate quiet time based on your timezone
-  - Note the line `color_order=Interstate75.COLOR_ORDER_GRB` in `flight_display.py` - this was required for the specific panel tested, but you may need to change it back to `COLOR_ORDER_RGB` or another value depending on your panel
+  - Copy both `flight_display.py` and `config.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
+  - Edit `config.py`:
+    - Set `API_URL` to the deployed Flight Finder Service
+    - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
+    - Set `DISPLAY_TYPE` and `COLOR_ORDER` to match your panel — see [Display panel configuration](#display-panel-configuration) below
+    - Optionally adjust the quiet time settings (show nothing on the display between these times)
+      - Be sure to set `UTC_OFFSET` to correctly calculate quiet time based on your timezone
+    - Other options include `SHOW_ALTITUDE` (cycles altitude alongside distance), `DISTANCE_UNIT`, `ALTITUDE_UNIT`, and scroll/refresh timing
   - Create a `secrets.py` file containing:
 
     ```python
@@ -27,6 +29,40 @@ Once connected to the I75 device:
     FLIGHT_FINDER_API_KEY = ""
     ```
   Run the `flight_display.py` script to start displaying flights
+
+### Display panel configuration
+
+LED matrix panels vary in their physical dimensions, scan rates, and how their red/green/blue lines are wired. Two settings in `config.py` need to match your specific panel:
+
+#### `DISPLAY_TYPE`
+
+Identifies the panel. Defaults to `DISPLAY_INTERSTATE75_64X32` - suitable for a standard 64×32 RGB matrix. To use a different panel, import the matching constant at the top of `config.py` and assign it:
+
+```python
+from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X64
+DISPLAY_TYPE = DISPLAY_INTERSTATE75_64X64
+```
+
+Pimoroni's `interstate75` module exposes constants for other sizes too (`DISPLAY_INTERSTATE75_128X32`, `DISPLAY_INTERSTATE75_128X64`, etc.) - see the [Pimoroni Interstate 75 docs](https://learn.pimoroni.com/article/getting-started-with-interstate-75) for the full list.
+
+**Quirk for some 64×32 panels:** if your panel runs at 1/32 scan (a single line of the controller drives every row at once) it needs to be initialised as 64×64 to render the visible 32 rows correctly and not cut off the bottom half. Use:
+
+```python
+from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X64
+DISPLAY_TYPE = DISPLAY_INTERSTATE75_64X64
+```
+
+`i75.height` will then report 64, but only the top 32 rows are physically visible. The layout in this example fits within those rows, so no other changes are needed.
+
+#### `COLOR_ORDER`
+
+Defaults to `Interstate75.COLOR_ORDER_RGB`. If your panel's colours look wrong (eg. text drawn as RED appears GREEN, or BLUE appears RED), try the alternative ordering:
+
+```python
+COLOR_ORDER = Interstate75.COLOR_ORDER_GRB
+```
+
+Other orderings are available on the `Interstate75` class (`COLOR_ORDER_BGR`, `COLOR_ORDER_BRG`, `COLOR_ORDER_RBG`, `COLOR_ORDER_GBR`) - try each if neither RGB nor GRB looks right. The easiest way to identify the correct one is to render a known colour (eg. the WiFi-connecting message uses WHITE on a black background, and once you see a real flight, line 1 is YELLOW, line 2 is CYAN + BLUE, and line 3 is MAGENTA).
 
 
 ## Emulator
@@ -61,4 +97,4 @@ The emulator loads test data from `test_flight_data.json`. Edit this file to tes
 }
 ```
 
-If nothing is displayed / the emulator quits, check the "quiet time" settings in `flight_display.py` to ensure the current time is outside of the configured quiet period.
+If nothing is displayed / the emulator quits, check the "quiet time" settings in `config.py` to ensure the current time is outside of the configured quiet period.
