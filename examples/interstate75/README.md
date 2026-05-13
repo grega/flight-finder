@@ -101,7 +101,8 @@ If nothing is displayed / the emulator quits, check the "quiet time" settings in
 
 ## Future ideas
 
+- **Vertical speed indicator** - small climb/descent/level glyph next to the altitude (from `position.vertical_speed`). Initial attempt with `^`/`v`/`-` chars didn't render cleanly in bitmap8; a "hand-drawn" pixel arrow would likely look better.
 - **Heading arrow** - small compass-direction glyph showing where the flight is pointing.
 - **Cycle through N closest flights** - rotate the display through the top few via `/flights-in-radius` instead of only ever showing the single closest.
 - **Button input for detail view** - use the I75's user buttons (`SWITCH_A`/`B`/`C`) to swap into a detail layout showing callsign, registration, and ground speed.
-- **Special-flight highlighting** - flash colors or hold the display longer when a flight matches a watchlist (rare aircraft types, specific airlines, military callsign patterns, etc.).
+- **Special-flight highlighting** - flash colors or hold the display longer when a flight matches a watchlist (rare aircraft types, specific airlines, military callsign patterns, etc).

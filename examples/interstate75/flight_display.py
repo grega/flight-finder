@@ -161,7 +161,7 @@ def round_value(value):
         return value # zero or negative, return as-is
 
 def format_altitude_ft(altitude_ft):
-    """Format altitude in feet — 'Nft' under 1000 (eg. '500ft'), 'Nk ft' otherwise (rounded to thousands)."""
+    """Format altitude in feet - 'Nft' under 1000 (eg. '500ft'), 'Nk ft' otherwise (rounded to thousands)."""
     if altitude_ft < 1000:
         return f"{altitude_ft}ft"
     return f"{round(altitude_ft / 1000)}k ft"
