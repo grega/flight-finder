@@ -1,7 +1,7 @@
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
 
 # Import the matching constant above (eg. DISPLAY_INTERSTATE75_64X32) and assign it here - the import and the DISPLAY_TYPE must match.
-# Note that some 64x32 panels with 1/32 scan need DISPLAY_INTERSTATE75_64X64 in order to not cut off the bottom half of the display; i75.height then reports 64 but only the top 32 rows are physically visible.
+# Note that some 64x32 panels with 1/32 scan (rather than 1/16) need DISPLAY_INTERSTATE75_64X64 in order to not cut off the bottom half of the display; i75.height then reports 64 but only the top 32 rows are physically visible.
 DISPLAY_TYPE = DISPLAY_INTERSTATE75_64X32
 # Color order: try alternative ordering (eg. COLOR_ORDER_GRB) if colors look wrong on your panel
 COLOR_ORDER  = Interstate75.COLOR_ORDER_RGB
