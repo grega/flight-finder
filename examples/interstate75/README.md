@@ -20,7 +20,7 @@ Once connected to the I75 device:
     - Set `DISPLAY_TYPE` and `COLOR_ORDER` to match your panel - see [Display panel configuration](#display-panel-configuration) below
     - Optionally adjust the quiet time settings (show nothing on the display between these times)
       - Be sure to set `UTC_OFFSET` to correctly calculate quiet time based on your timezone
-    - Other options include `SHOW_ALTITUDE` (cycles altitude alongside distance), `DISTANCE_UNIT`, `ALTITUDE_UNIT`, `ALTITUDE_CEILING_FT` (ignore flights above this altitude — useful to filter out cruise overflights and focus on flights arriving/departing nearby airports), and scroll/refresh timing
+    - Other options include `SHOW_ALTITUDE` (cycles altitude alongside distance), `DISTANCE_UNIT`, `ALTITUDE_UNIT`, `ALTITUDE_CEILING_FT` (ignore flights above this altitude - useful to filter out cruise overflights and focus on flights arriving/departing nearby airports), and scroll/refresh timing
   - Create a `secrets.py` file containing:
 
     ```python
@@ -98,3 +98,10 @@ The emulator loads test data from `test_flight_data.json`. Edit this file to tes
 ```
 
 If nothing is displayed / the emulator quits, check the "quiet time" settings in `config.py` to ensure the current time is outside of the configured quiet period.
+
+## Future ideas
+
+- **Heading arrow** - small compass-direction glyph showing where the flight is pointing.
+- **Cycle through N closest flights** - rotate the display through the top few via `/flights-in-radius` instead of only ever showing the single closest.
+- **Button input for detail view** - use the I75's user buttons (`SWITCH_A`/`B`/`C`) to swap into a detail layout showing callsign, registration, and ground speed.
+- **Special-flight highlighting** - flash colors or hold the display longer when a flight matches a watchlist (rare aircraft types, specific airlines, military callsign patterns, etc.).

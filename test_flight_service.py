@@ -143,7 +143,7 @@ def test_closest_flight_max_altitude_filter(mock_api, client):
     mock_api.get_flights.return_value = [high, low]
     mock_api.get_flight_details.return_value = {"origin": "London", "destination": "Paris"}
 
-    # ceiling above both: either could be returned (same mock distance) — just verify success
+    # ceiling above both: either could be returned (same mock distance) - just verify success
     response = client.get("/closest-flight?lat=10&lon=20&max_altitude=40000")
     assert response.status_code == 200
     assert response.get_json()["found"] is True

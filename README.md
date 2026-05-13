@@ -100,7 +100,7 @@ curl -H "X-API-Key: your_secret_key_here" \
 | `lat` | float | Yes | Latitude | -90 to 90 |
 | `lon` | float | Yes | Longitude | -180 to 180 |
 | `radius` | float | No | Search radius in km | 1 to 500 (default: 10) |
-| `max_altitude` | float | No | Altitude ceiling in feet — flights above this are ignored (useful to filter out cruise-altitude overflights and focus on flights arriving/departing nearby airports) | ≥ 0 (default: no ceiling) |
+| `max_altitude` | float | No | Altitude ceiling in feet - flights above this are ignored (useful to filter out cruise-altitude overflights and focus on flights arriving/departing nearby airports) | ≥ 0 (default: no ceiling) |
 
 ### Response Format
 
@@ -192,7 +192,7 @@ Query Parameters:
 - `lat` (required): Latitude
 - `lon` (required): Longitude  
 - `radius` (optional): Search radius in km (default: 10)
-- `max_altitude` (optional): Altitude ceiling in feet — flights above this are ignored (default: no ceiling)
+- `max_altitude` (optional): Altitude ceiling in feet - flights above this are ignored (default: no ceiling)
 
 Headers:
 - `X-API-Key` (optional): API key, if authentication is enabled / required
@@ -205,7 +205,7 @@ Query Parameters:
 - `lat` (required): Latitude
 - `lon` (required): Longitude
 - `radius` (optional): Search radius in kilometers (default: 10)
-- `max_altitude` (optional): Altitude ceiling in feet — flights above this are ignored (default: no ceiling)
+- `max_altitude` (optional): Altitude ceiling in feet - flights above this are ignored (default: no ceiling)
 
 Headers:
 - `X-API-Key` (optional): API key, if authentication is enabled / required
