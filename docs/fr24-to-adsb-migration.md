@@ -2,6 +2,12 @@
 
 Status: planned, not yet implemented. Authored 2026-05-09.
 
+Notes / resources to check:
+
+- https://github.com/c0wsaysmoo/plane-tracker-rgb-pi
+  - https://github.com/c0wsaysmoo/plane-tracker-rgb-pi/pull/25
+- https://developers.amadeus.com/blog/comparing-open-source-flight-data-sources
+
 ## Context
 
 The current flight-finder service depends on a fork of `FlightRadarAPI` routed through a self-hosted Cloudflare Worker (a workaround for FR24's TLS-fingerprinting bot protection that landed 2026-05-01). We want to evaluate "genuinely free + supported" alternatives without touching production code yet — experiment in a new directory, prove the response shape works for the existing Interstate75 LED display, then plan a swap-in later.
