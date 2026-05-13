@@ -16,14 +16,17 @@ HEIGHT = i75.height # 32 pixels
 ##########
 # Config #
 ##########
-API_URL          = "https://wherever-the-flight-finder-service-is-deployed"
-BRIGHT_MODE      = False # Set to True for brighter (higher intensity) colours
-DISTANCE_UNIT    = "km" # km or mi, for display purposes only
-LATITUDE         = 51.5274575 # lat of display location
-LONGITUDE        = -0.2595316 # lon of display location
-RADIUS           = 10 # km, for finding flights (from lat/lon)
-REFRESH_INTERVAL = 60 # seconds, best to keep this at 30s or more
-USER_AGENT_ID    = "Flight Tracker 1" # ID used as part of user-agent header in requests to API, eg. "I75 Matrix Display {USER_AGENT_ID}" (useful for identifying the devices making requests)
+API_URL             = "https://wherever-the-flight-finder-service-is-deployed"
+BRIGHT_MODE         = False # Set to True for brighter (higher intensity) colours
+DISTANCE_UNIT       = "km" # km or mi, for display purposes only
+SHOW_ALTITUDE       = False # Set to True to cycle between distance and altitude on line 2
+ALTITUDE_UNIT       = "ft" # ft or m, for display purposes only (FR24 reports altitude in feet)
+VALUE_SWAP_INTERVAL = 5 # seconds between distance/altitude swaps when SHOW_ALTITUDE is True
+LATITUDE            = 51.5274575 # lat of display location
+LONGITUDE           = -0.2595316 # lon of display location
+RADIUS              = 10 # km, for finding flights (from lat/lon)
+REFRESH_INTERVAL    = 60 # seconds, best to keep this at 30s or more
+USER_AGENT_ID       = "Flight Tracker 1" # ID used as part of user-agent header in requests to API, eg. "I75 Matrix Display {USER_AGENT_ID}" (useful for identifying the devices making requests)
 
 # "quiet time" config (ie. show nothing on the display between these times)
 UTC_OFFSET         = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
@@ -41,6 +44,7 @@ GREEN   = display.create_pen(*((64, 255, 64) if BRIGHT_MODE else (32, 128, 32)))
 CYAN    = display.create_pen(*((0, 255, 255) if BRIGHT_MODE else (0, 128, 128)))
 MAGENTA = display.create_pen(*((255, 0, 255) if BRIGHT_MODE else (128, 0, 128)))
 YELLOW  = display.create_pen(*((255, 255, 0) if BRIGHT_MODE else (128, 128, 0)))
+ORANGE  = display.create_pen(*((255, 128, 0) if BRIGHT_MODE else (128, 64, 0)))
 
 # font
 display.set_font("bitmap8")
@@ -226,18 +230,39 @@ def display_flight_data(data):
     display.set_pen(YELLOW)
     display.text(f"{origin} > {destination}", 2, 2, WIDTH, 1)
 
-    # line 2: flight number and distance
+    altitude_ft = flight.get("position", {}).get("altitude", 0)
+    if ALTITUDE_UNIT == "m":
+        altitude_value = round_value(altitude_ft * 0.3048)
+    else:
+        altitude_value = round_value(altitude_ft)
+
+    # line 2: flight number, then distance (cycled with altitude by main loop if SHOW_ALTITUDE)
     display.set_pen(CYAN)
     display.text(f"{flight_number}", 2, 13, WIDTH, 1)
     flight_pixel_width = len(flight_number) * 6 # 6 is the character width for bitmap8
+    distance_text = f"{distance}{unit}"
+    altitude_text = f"{altitude_value}{ALTITUDE_UNIT}"
     display.set_pen(BLUE)
-    display.text(f"{distance}{unit}", flight_pixel_width, 13, 100, 1)
+    display.text(distance_text, flight_pixel_width, 13, 100, 1)
 
     # line 3: aircraft model
     display.set_pen(MAGENTA)
     display.text(f"{aircraft_model}", 2, 23, 100, 1) # set word-wrap to a large value (100) so as to never wrap
 
     i75.update()
+
+    return {
+        "x_offset": flight_pixel_width,
+        "distance_text": distance_text,
+        "altitude_text": altitude_text,
+    }
+
+def draw_line2_value(text, color, x_offset):
+    """Redraw the right-hand value on line 2 (clears previous text first)."""
+    display.set_pen(BLACK)
+    display.rectangle(x_offset, 13, WIDTH - x_offset, 8)
+    display.set_pen(color)
+    display.text(text, x_offset, 13, 100, 1)
 
 def draw_countdown(progress):
     """Draw a countdown progress bar in the top-right corner.
@@ -317,13 +342,24 @@ def main():
         try:
             flight_data = fetch_flight_data(FLIGHT_FINDER_API_KEY)
             print(f"Displaying flight data for {REFRESH_INTERVAL} seconds...")
-            display_flight_data(flight_data)
+            cycle_info = display_flight_data(flight_data)
 
             start_time = time.time()
+            showing_altitude = False # initial draw shows distance
             while time.time() - start_time < REFRESH_INTERVAL:
                 elapsed = time.time() - start_time
                 progress = elapsed / REFRESH_INTERVAL
                 draw_countdown(progress)
+
+                if SHOW_ALTITUDE and cycle_info:
+                    should_show_altitude = (int(elapsed) // VALUE_SWAP_INTERVAL) % 2 == 1
+                    if should_show_altitude != showing_altitude:
+                        showing_altitude = should_show_altitude
+                        if showing_altitude:
+                            draw_line2_value(cycle_info["altitude_text"], ORANGE, cycle_info["x_offset"])
+                        else:
+                            draw_line2_value(cycle_info["distance_text"], BLUE, cycle_info["x_offset"])
+
                 i75.update()
                 time.sleep(1)
 
