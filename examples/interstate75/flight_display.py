@@ -28,6 +28,10 @@ ORANGE  = display.create_pen(*((255, 128, 0) if BRIGHT_MODE else (128, 64, 0)))
 # font
 display.set_font("bitmap8")
 
+# px between adjacent segments on a multi-segment scrolling line (eg. between
+# the flight number and the distance/altitude value on line 2)
+SEGMENT_GAP = 4
+
 #############
 # Functions #
 #############
@@ -155,14 +159,10 @@ def round_value(value):
         return value # zero or negative, return as-is
 
 def format_altitude_ft(altitude_ft):
-    """Format altitude in feet as a compact 'Nk ft' (>= 10k) or 'N.Nk ft' (< 10k) string.
-
-    Keeps line 2 short enough to typically fit even when paired with a flight number,
-    avoiding the need to scroll long altitudes like '37000ft'.
-    """
-    if altitude_ft >= 10000:
-        return f"{round(altitude_ft / 1000)}k ft"
-    return f"{altitude_ft / 1000:.1f}k ft"
+    """Format altitude in feet — 'Nft' under 1000 (eg. '500ft'), 'Nk ft' otherwise (rounded to thousands)."""
+    if altitude_ft < 1000:
+        return f"{altitude_ft}ft"
+    return f"{round(altitude_ft / 1000)}k ft"
     
 def display_flight_data(data):
     """Display flight data on the screen"""
@@ -208,25 +208,27 @@ def display_flight_data(data):
     else:
         altitude_text = format_altitude_ft(altitude_ft)
 
-    # line 2: flight number, then distance (cycled with altitude by main loop if SHOW_ALTITUDE)
-    display.set_pen(CYAN)
-    display.text(f"{flight_number}", 2, 13, WIDTH, 1)
-    flight_pixel_width = len(flight_number) * 6 # 6 is the character width for bitmap8
     distance_text = f"{distance}{unit}"
-    display.set_pen(BLUE)
-    display.text(distance_text, flight_pixel_width, 13, 100, 1)
-
-    # line 3: aircraft model (scrolled by main loop if it overflows the display)
-    display.set_pen(MAGENTA)
-    display.text(f"{aircraft_model}", 2, 23, 1000, 1) # high word-wrap (1000) so long names never wrap; main loop scrolls them
+    flight_number_width = display.measure_text(flight_number, 1)
+    distance_width = display.measure_text(distance_text, 1)
+    altitude_width = display.measure_text(altitude_text, 1)
     model_pixel_width = display.measure_text(aircraft_model, 1)
+
+    # line 2: flight number + distance (update_dynamic_display swaps to altitude when SHOW_ALTITUDE,
+    # and scrolls if the combined width overflows the display)
+    draw_scrolling_line(13, [(flight_number, CYAN), (distance_text, BLUE)], 2)
+
+    # line 3: aircraft model (scrolled by update_dynamic_display when it overflows the display)
+    draw_scrolling_line(23, [(aircraft_model, MAGENTA)], 2)
 
     i75.update()
 
     return {
-        "x_offset": flight_pixel_width,
+        "flight_number": flight_number,
         "distance_text": distance_text,
         "altitude_text": altitude_text,
+        "line2_distance_width": flight_number_width + SEGMENT_GAP + distance_width,
+        "line2_altitude_width": flight_number_width + SEGMENT_GAP + altitude_width,
         "model_text": aircraft_model,
         "model_pixel_width": model_pixel_width,
     }
@@ -241,7 +243,9 @@ def draw_scrolling_line(y, segments, x_offset):
     display.set_pen(BLACK)
     display.rectangle(0, y, WIDTH, 9)
     cursor_x = x_offset
-    for text, color in segments:
+    for i, (text, color) in enumerate(segments):
+        if i > 0:
+            cursor_x += SEGMENT_GAP
         display.set_pen(color)
         display.text(text, cursor_x, y, 1000, 1)
         cursor_x += display.measure_text(text, 1)
@@ -290,29 +294,50 @@ def draw_countdown(progress):
     display.set_pen(BLACK)
 
 def update_dynamic_display(elapsed_ms, cycle_info, state):
-    """Per-tick update for countdown bar, line 2 altitude/distance swap, and line 3 marquee.
+    """Per-tick update for countdown, line 2 (altitude/distance swap + scroll), and line 3 scroll.
 
-    `state` is a dict with keys `showing_altitude` and `line3_offset` that is mutated in place.
+    `state` is a dict with keys `showing_altitude`, `line2_scroll_start_ms`,
+    `line2_offset`, and `line3_offset`. Mutated in place. Both lines route through
+    compute_scroll_offset + draw_scrolling_line so they share logic.
     Shared by the hardware main loop and the emulator so both render identically.
     """
     elapsed_s = elapsed_ms / 1000
     progress = elapsed_s / REFRESH_INTERVAL
     draw_countdown(progress)
 
-    if SHOW_ALTITUDE and cycle_info:
-        should_show_altitude = (int(elapsed_s) // VALUE_SWAP_INTERVAL) % 2 == 1
-        if should_show_altitude != state["showing_altitude"]:
-            state["showing_altitude"] = should_show_altitude
-            if should_show_altitude:
-                draw_line2_value(cycle_info["altitude_text"], ORANGE, cycle_info["x_offset"])
-            else:
-                draw_line2_value(cycle_info["distance_text"], BLUE, cycle_info["x_offset"])
+    if not cycle_info:
+        return
 
-    if cycle_info:
-        new_line3_offset = line3_scroll_offset(elapsed_ms, cycle_info["model_pixel_width"])
-        if new_line3_offset != state["line3_offset"]:
-            state["line3_offset"] = new_line3_offset
-            draw_line3(cycle_info["model_text"], new_line3_offset)
+    # Pick the line 2 value, and reset its scroll clock when the value swaps so
+    # the new content starts from the left with a pause (rather than jumping into
+    # an arbitrary scroll position carried over from the previous value's width).
+    if SHOW_ALTITUDE:
+        show_altitude = (int(elapsed_s) // VALUE_SWAP_INTERVAL) % 2 == 1
+    else:
+        show_altitude = False
+
+    if show_altitude != state["showing_altitude"]:
+        state["showing_altitude"] = show_altitude
+        state["line2_scroll_start_ms"] = elapsed_ms
+        state["line2_offset"] = None # force redraw below
+
+    if show_altitude:
+        line2_segments = [(cycle_info["flight_number"], CYAN), (cycle_info["altitude_text"], ORANGE)]
+        line2_width = cycle_info["line2_altitude_width"]
+    else:
+        line2_segments = [(cycle_info["flight_number"], CYAN), (cycle_info["distance_text"], BLUE)]
+        line2_width = cycle_info["line2_distance_width"]
+
+    line2_elapsed = elapsed_ms - state["line2_scroll_start_ms"]
+    new_line2_offset = compute_scroll_offset(line2_elapsed, line2_width)
+    if new_line2_offset != state["line2_offset"]:
+        state["line2_offset"] = new_line2_offset
+        draw_scrolling_line(13, line2_segments, new_line2_offset)
+
+    new_line3_offset = compute_scroll_offset(elapsed_ms, cycle_info["model_pixel_width"])
+    if new_line3_offset != state["line3_offset"]:
+        state["line3_offset"] = new_line3_offset
+        draw_scrolling_line(23, [(cycle_info["model_text"], MAGENTA)], new_line3_offset)
 
 def main():
     """Main function to connect to WiFi, fetch data, and display it"""
@@ -375,7 +400,12 @@ def main():
             cycle_info = display_flight_data(flight_data)
 
             start_ticks = time.ticks_ms()
-            state = {"showing_altitude": False, "line3_offset": 2}
+            state = {
+                "showing_altitude": False,
+                "line2_scroll_start_ms": 0,
+                "line2_offset": 2,
+                "line3_offset": 2,
+            }
             refresh_interval_ms = REFRESH_INTERVAL * 1000
             while time.ticks_diff(time.ticks_ms(), start_ticks) < refresh_interval_ms:
                 elapsed_ms = time.ticks_diff(time.ticks_ms(), start_ticks)

@@ -267,7 +267,12 @@ if __name__ == "__main__":
                 cycle_info = flight_display.display_flight_data(flight_data)
 
                 start_time = time.time()
-                state = {"showing_altitude": False, "line3_offset": 2}
+                state = {
+                    "showing_altitude": False,
+                    "line2_scroll_start_ms": 0,
+                    "line2_offset": 2,
+                    "line3_offset": 2,
+                }
                 while time.time() - start_time < flight_display.REFRESH_INTERVAL:
                     elapsed_ms = int((time.time() - start_time) * 1000)
                     flight_display.update_dynamic_display(elapsed_ms, cycle_info, state)
