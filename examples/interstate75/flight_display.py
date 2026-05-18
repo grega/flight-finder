@@ -193,6 +193,9 @@ def network_connect(ssid, password):
     """Connect to WiFi network"""
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    # CYW43 returns from active(True) before the radio is actually ready.
+    # Without this delay the first connect() typically times out on a cold boot.
+    time.sleep(2)
     wlan.config(pm=0xa11140) # turn WiFi power saving off for some slow APs
 
     print("Connecting to WiFi...")
