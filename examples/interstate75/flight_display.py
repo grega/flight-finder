@@ -628,11 +628,7 @@ def main():
         if is_quiet_period():
             print("Quiet time")
             clear_display()
-            # Poll the webserver frequently so we can still accept pushes during
-            # quiet periods (when nothing else is happening on the device).
-            for _ in range(300):
-                poll_webserver()
-                time.sleep(1)
+            time.sleep(300)
             continue
 
         try:
