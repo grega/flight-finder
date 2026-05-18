@@ -216,6 +216,7 @@ def network_connect(ssid, password):
             display.text("Connected", 2, 2, WIDTH, 1)
             display.text(ip, 2, 13, WIDTH, 1)
             i75.update()
+            time.sleep(3)
             return True
     except Exception:
         pass
@@ -264,6 +265,7 @@ def network_connect(ssid, password):
         display.text("Connected", 2, 2, WIDTH, 1)
         display.text(ip, 2, 13, WIDTH, 1)
         i75.update()
+        time.sleep(3)
         return True
 
 def is_quiet_period():
