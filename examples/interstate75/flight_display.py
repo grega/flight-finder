@@ -9,6 +9,8 @@ from interstate75 import Interstate75
 # config lives in config.py - edit it there to customise behaviour
 from config import *
 
+import webserver
+
 i75 = Interstate75(display=DISPLAY_TYPE, color_order=COLOR_ORDER)
 display = i75.display
 
@@ -37,6 +39,62 @@ def clear_display():
     display.set_pen(BLACK)
     display.clear()
     i75.update()
+
+# Set by /reboot; the main loop reboots after the response has flushed so the
+# client sees a clean 200 rather than a dropped connection.
+_reboot_requested = False
+
+# Files the upload endpoint is allowed to write. Guards against path traversal
+# and stops a typo'd request from clobbering an unrelated file.
+_UPLOADABLE = ("main.py", "config.py")
+
+def _handle_get_config(body, query):
+    try:
+        with open("config.py", "rb") as f:
+            return (200, "text/x-python", f.read())
+    except OSError as e:
+        return (500, "text/plain", f"Cannot read config.py: {e}")
+
+def _handle_upload(body, query):
+    # query is the raw query string, eg. "path=main.py"
+    target = None
+    for pair in query.split("&"):
+        if pair.startswith("path="):
+            target = pair[len("path="):]
+            break
+    if target not in _UPLOADABLE:
+        return (400, "text/plain", f"path must be one of {_UPLOADABLE}, got {target!r}")
+    try:
+        with open(target, "wb") as f:
+            f.write(body)
+    except OSError as e:
+        return (500, "text/plain", f"Write failed: {e}")
+    return (200, "text/plain", f"Wrote {len(body)} bytes to {target}")
+
+def _handle_reboot(body, query):
+    global _reboot_requested
+    _reboot_requested = True
+    return (200, "text/plain", "Rebooting")
+
+def _handle_index(body, query):
+    return (200, "text/plain",
+            "Interstate 75 flight display\n"
+            "  GET  /config            - download current config.py\n"
+            "  POST /upload?path=main.py | config.py - write file\n"
+            "  POST /reboot            - machine.reset()\n")
+
+def register_routes():
+    webserver.route("GET",  "/",        _handle_index)
+    webserver.route("GET",  "/config",  _handle_get_config)
+    webserver.route("POST", "/upload",  _handle_upload)
+    webserver.route("POST", "/reboot",  _handle_reboot)
+
+def poll_webserver():
+    """Service one HTTP request if pending, then reboot if /reboot was hit."""
+    webserver.poll()
+    if _reboot_requested:
+        time.sleep_ms(200) # let the response flush before resetting
+        machine.reset()
 
 def network_connect(ssid, password):
     """Connect to WiFi network"""
@@ -73,11 +131,13 @@ def network_connect(ssid, password):
     else:
         print('Connected to WiFi')
         status = wlan.ifconfig()
-        print(f'IP: {status[0]}')
+        ip = status[0]
+        print(f'IP: {ip}')
         display.set_pen(BLACK)
         display.clear()
         display.set_pen(WHITE)
         display.text("Connected", 2, 2, WIDTH, 1)
+        display.text(ip, 2, 13, WIDTH, 1)
         i75.update()
         return True
 
@@ -340,6 +400,7 @@ def update_dynamic_display(elapsed_ms, cycle_info, state):
 
 def main():
     """Main function to connect to WiFi, fetch data, and display it"""
+    print("BOOT: main() entered")
     try:
         from secrets import WIFI_PASSWORD, WIFI_SSID, FLIGHT_FINDER_API_KEY
         if WIFI_SSID == "":
@@ -362,12 +423,25 @@ def main():
         i75.update()
         return
 
+    print("BOOT: secrets loaded, connecting WiFi")
     connected = False
     while not connected:
         connected = network_connect(WIFI_SSID, WIFI_PASSWORD)
         if not connected:
             time.sleep(5)
 
+    # Start the webserver BEFORE anything that might block (eg. NTP DNS resolution).
+    # This guarantees `./push.py` can always reach us to push fixes, even if the
+    # rest of startup hangs.
+    print("BOOT: registering routes")
+    register_routes()
+    print("BOOT: starting webserver")
+    try:
+        webserver.start()
+    except Exception as e:
+        print(f"Webserver failed to start: {e}") # non-fatal; display still works
+
+    print("BOOT: attempting NTP sync")
     try:
         ntptime.host = "pool.ntp.org"
         ntptime.settime()
@@ -377,6 +451,7 @@ def main():
     except:
         print("Failed to sync time")
 
+    print("BOOT: entering display loop")
     display.set_pen(BLACK)
     display.clear()
     display.set_pen(GREEN)
@@ -390,9 +465,13 @@ def main():
         if is_quiet_period():
             print("Quiet time")
             clear_display()
-            time.sleep(300) # sleep for 5 minutes during quiet period to reduce activity
+            # Poll the webserver frequently so we can still accept pushes during
+            # quiet periods (when nothing else is happening on the device).
+            for _ in range(300):
+                poll_webserver()
+                time.sleep(1)
             continue
-        
+
         try:
             flight_data = fetch_flight_data(FLIGHT_FINDER_API_KEY)
             print(f"Displaying flight data for {REFRESH_INTERVAL} seconds...")
@@ -410,6 +489,7 @@ def main():
                 elapsed_ms = time.ticks_diff(time.ticks_ms(), start_ticks)
                 update_dynamic_display(elapsed_ms, cycle_info, state)
                 i75.update()
+                poll_webserver()
                 time.sleep_ms(100)
 
         except Exception as e:
@@ -418,6 +498,8 @@ def main():
             display.clear()
             display.text("Error", 2, 2, WIDTH, 1)
             i75.update()
-            time.sleep(10)
+            for _ in range(10):
+                poll_webserver()
+                time.sleep(1)
 
 main()

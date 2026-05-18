@@ -13,7 +13,7 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
 Once connected to the I75 device:
-  - Copy both `flight_display.py` and `config.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
+  - Copy `flight_display.py`, `config.py`, and `webserver.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
   - Edit `config.py`:
     - Set `API_URL` to the deployed Flight Finder Service
     - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
@@ -64,6 +64,45 @@ COLOR_ORDER = Interstate75.COLOR_ORDER_GRB
 
 Other orderings are available on the `Interstate75` class (`COLOR_ORDER_BGR`, `COLOR_ORDER_BRG`, `COLOR_ORDER_RBG`, `COLOR_ORDER_GBR`) - try each if neither RGB nor GRB looks right. The easiest way to identify the correct one is to render a known colour (eg. the WiFi-connecting message uses WHITE on a black background, and once you see a real flight, line 1 is YELLOW, line 2 is CYAN + BLUE, and line 3 is MAGENTA).
 
+
+## Pushing updates over WiFi
+
+Once the device has been bootstrapped (via USB, as above), further iterations on `flight_display.py` and on the per-device `config.py` can be pushed over WiFi using `push.py`. The device runs a small HTTP server (`webserver.py`) on port 80 that exposes upload/download/reboot endpoints; `push.py` is the laptop-side client.
+
+The device shows its IP address on the "Connected" screen at boot. Stash it once:
+
+```bash
+echo 192.168.1.42 > .push_host   # or: export I75_HOST=192.168.1.42
+```
+
+Then:
+
+```bash
+./push.py code            # push flight_display.py as main.py and reboot
+./push.py config fetch    # download device's config.py to _device/config.py
+./push.py config push     # upload _device/config.py and reboot
+./push.py reboot          # just reboot
+./push.py webserver       # rarely needed - push webserver.py and reboot
+```
+
+### Editing per-device config
+
+Per-device values (`LATITUDE`/`LONGITUDE`, `DISPLAY_TYPE`, quiet-hour settings, etc.) live on the device itself, not in the repo. The workflow is:
+
+1. `./push.py config fetch` — pulls the device's current `config.py` into `_device/config.py` (gitignored).
+2. Edit `_device/config.py` locally in your editor.
+3. `./push.py config push` — uploads it back and reboots.
+
+### Endpoints
+
+For reference, `webserver.py` exposes:
+
+- `GET /` — usage summary
+- `GET /config` — returns the device's current `config.py`
+- `POST /upload?path=main.py` (or `?path=config.py`) — writes the request body to that file
+- `POST /reboot` — `machine.reset()` after flushing the response
+
+The endpoint has no auth, so it assumes a trusted LAN. The upload `path` is restricted to an allowlist (`main.py`, `config.py`) to prevent path traversal or accidental clobbering of other files.
 
 ## Emulator
 
