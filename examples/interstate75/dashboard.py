@@ -25,6 +25,7 @@ _STYLES = """
   --i75-cyan:   #2f8a8a;
   --i75-blue:   #4a6fa5;
   --i75-magenta:#a14d97;
+  --i75-orange: #c87333;
   --i75-green:  #5fa370;
   --i75-red:    #c66767;
 }
@@ -68,9 +69,29 @@ _STYLES = """
   align-self: start;
   margin-top: 0.5rem; /* nudge arrow down to baseline with IATA */
 }
-.hero-meta { text-align: center; color: var(--pico-muted-color); margin: 0 0 0.5rem; }
+.hero-meta { text-align: center; color: var(--pico-muted-color); margin: 0.25rem 0 0; }
 .hero-meta .aircraft { color: var(--i75-magenta); font-weight: 600; }
 .hero-meta .distance { color: var(--i75-blue); font-weight: 600; }
+.hero-meta .altitude { color: var(--i75-orange); font-weight: 600; }
+.hero-meta .vs-up    { color: var(--i75-green); }
+.hero-meta .vs-down  { color: var(--i75-red); }
+.hero-meta .vs-level { color: var(--pico-muted-color); }
+.hero-sub-meta {
+  text-align: center;
+  color: var(--pico-muted-color);
+  font-size: 0.85rem;
+  margin: 0.2rem 0 0;
+}
+.fr24-link {
+  text-align: center;
+  font-size: 0.8rem;
+  margin: 0.6rem 0 0;
+}
+.fr24-link a {
+  color: var(--pico-muted-color);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .hero-flight-no { text-align: center; margin: 0; }
 .hero-flight-no strong { color: var(--i75-cyan); font-size: 1.15rem; letter-spacing: 0.04em; }
 .fetch-ok   { color: var(--i75-green); }
@@ -97,6 +118,7 @@ h1 { margin-bottom: 0.25rem; }
     --i75-cyan:   #7fd1d1;
     --i75-blue:   #94adde;
     --i75-magenta:#d896c7;
+    --i75-orange: #f0a060;
     --i75-green:  #88c598;
     --i75-red:    #e89090;
   }
@@ -191,7 +213,78 @@ def _iata_link(iata):
     return f'<a href="https://www.google.com/maps/search/?api=1&query={query}">{_esc(iata)}</a>'
 
 
-def _render_flight(flight):
+def _fmt_int_with_commas(n):
+    """Insert thousands separators into an integer (12000 -> '12,000')."""
+    s = str(abs(int(n)))
+    parts = []
+    while len(s) > 3:
+        parts.insert(0, s[-3:])
+        s = s[:-3]
+    parts.insert(0, s)
+    return ("-" if n < 0 else "") + ",".join(parts)
+
+
+def _fmt_altitude(ft, unit):
+    """Format altitude, converting to meters if `unit` is 'm'."""
+    if ft is None:
+        return ""
+    if unit == "m":
+        return f"{_fmt_int_with_commas(round(ft * 0.3048))} m"
+    return f"{_fmt_int_with_commas(ft)} ft"
+
+
+def _fmt_distance(km, unit):
+    """Format distance, converting to miles if `unit` is 'mi'."""
+    if km is None:
+        return ""
+    if unit == "mi":
+        value = km * 0.621371
+    else:
+        value = km
+    # Match flight_display's rounding: whole number above 1, 1 decimal below
+    if value >= 1:
+        value = round(value)
+    else:
+        value = round(value, 1)
+    return f"{value} {unit}"
+
+
+def _vertical_arrow(vs):
+    """Climb/descent indicator from vertical_speed (fpm). Below |100| = level.
+
+    Returns an HTML span with the appropriate class for color-coding, or ''
+    if vertical_speed is missing.
+    """
+    if vs is None:
+        return ""
+    if vs > 100:
+        return ' <span class="vs-up" title="climbing">&#x2191;</span>'
+    if vs < -100:
+        return ' <span class="vs-down" title="descending">&#x2193;</span>'
+    return ' <span class="vs-level" title="level">&mdash;</span>'
+
+
+def _compass(deg):
+    """Heading in degrees -> 8-point compass label."""
+    if deg is None:
+        return ""
+    dirs = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    return dirs[int((deg + 22.5) / 45) % 8]
+
+
+def _fr24_url(flight):
+    """Build a FlightRadar24 URL for the flight. Callsign first (live tracking),
+    falling back to flight number (historical data page)."""
+    callsign = flight.get("callsign")
+    if callsign:
+        return f"https://www.flightradar24.com/{_url_quote_plus(callsign)}"
+    fn = flight.get("flight_number")
+    if fn and fn != "N/A":
+        return f"https://www.flightradar24.com/data/flights/{_url_quote_plus(fn.lower())}"
+    return None
+
+
+def _render_flight(flight, config):
     if not flight:
         return (
             '<article>'
@@ -204,6 +297,45 @@ def _render_flight(flight):
     destination_iata = flight.get("destination_iata")
     origin_name = flight.get("origin_name")
     destination_name = flight.get("destination_name")
+
+    distance_unit = config.get("distance_unit", "km")
+    altitude_unit = config.get("altitude_unit", "ft")
+
+    # Line 1: aircraft model + distance + altitude (with climb/descend arrow).
+    # Each segment is omitted gracefully if the underlying field is missing.
+    meta_parts = [f'<span class="aircraft">{_esc(flight.get("aircraft_model"))}</span>']
+    distance_text = _fmt_distance(flight.get("distance_km"), distance_unit)
+    if distance_text:
+        meta_parts.append(f'<span class="distance">{distance_text}</span>')
+    altitude_text = _fmt_altitude(flight.get("altitude_ft"), altitude_unit)
+    if altitude_text:
+        meta_parts.append(f'<span class="altitude">{altitude_text}</span>{_vertical_arrow(flight.get("vertical_speed"))}')
+
+    # Line 2: registration / callsign / ground speed / heading. All optional;
+    # if every field is missing the whole row is dropped.
+    sub_parts = []
+    reg = flight.get("registration")
+    if reg:
+        sub_parts.append(f'<span class="reg">{_esc(reg)}</span>')
+    callsign = flight.get("callsign")
+    if callsign:
+        sub_parts.append(f'<span class="callsign">{_esc(callsign)}</span>')
+    gs = flight.get("ground_speed")
+    if gs is not None:
+        sub_parts.append(f'<span class="speed">{int(gs)} kts</span>')
+    heading = flight.get("heading")
+    if heading is not None:
+        sub_parts.append(f'<span class="heading">{_compass(heading)} ({int(heading)}&deg;)</span>')
+
+    sub_meta_html = ""
+    if sub_parts:
+        sub_meta_html = f'<p class="hero-sub-meta">{" &middot; ".join(sub_parts)}</p>'
+
+    fr24_url = _fr24_url(flight)
+    fr24_html = ""
+    if fr24_url:
+        fr24_html = f'<p class="fr24-link"><a href="{fr24_url}" target="_blank" rel="noopener">&#x2197; Track on FlightRadar24</a></p>'
+
     return (
         '<article>'
         '<header>Current flight</header>'
@@ -221,7 +353,9 @@ def _render_flight(flight):
         f'<span class="airport-name">{_maps_link(destination_name)}</span>'
         '</div>'
         '</div>'
-        f'<p class="hero-meta"><span class="aircraft">{_esc(flight.get("aircraft_model"))}</span> &middot; <span class="distance">{flight.get("distance_km")} km</span></p>'
+        f'<p class="hero-meta">{" &middot; ".join(meta_parts)}</p>'
+        f'{sub_meta_html}'
+        f'{fr24_html}'
         '</article>'
     )
 
@@ -274,7 +408,7 @@ def render_status_html(info):
         f'<span class="refresh-badge" title="page auto-refreshes">&#x21bb; {_REFRESH_SECONDS}s</span>'
         '</h1>'
         '</header>'
-        + _render_flight(info["current_flight"])
+        + _render_flight(info["current_flight"], info.get("config", {}))
         + _render_device(info)
         + _render_footer()
         + '</main></body></html>'

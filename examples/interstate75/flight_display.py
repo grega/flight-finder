@@ -161,6 +161,12 @@ def _collect_status():
         "last_fetch_ok": _last_fetch_ok,
         "last_fetch_error": _last_fetch_error,
         "current_flight": _current_flight_summary,
+        # Surface the unit prefs from config.py so the dashboard can match the
+        # display (km/mi for distance, ft/m for altitude).
+        "config": {
+            "distance_unit": DISTANCE_UNIT,
+            "altitude_unit": ALTITUDE_UNIT,
+        },
     }
 
 def _handle_status(body, query):
@@ -388,6 +394,8 @@ def display_flight_data(data):
     origin = route.get("origin_iata") or "N/A"
     destination = route.get("destination_iata") or "N/A"
 
+    position = flight.get("position", {})
+    aircraft = flight.get("aircraft", {})
     _current_flight_summary = {
         "flight_number": flight_number,
         "aircraft_model": aircraft_model,
@@ -396,6 +404,14 @@ def display_flight_data(data):
         "origin_name": route.get("origin_name"),
         "destination_iata": destination,
         "destination_name": route.get("destination_name"),
+        # Extra fields exposed to /status (JSON) and rendered by the dashboard.
+        # Display-side rendering ignores them; they exist purely for the web UI.
+        "altitude_ft": position.get("altitude"),
+        "vertical_speed": position.get("vertical_speed"),
+        "ground_speed": position.get("ground_speed"),
+        "heading": position.get("heading"),
+        "registration": aircraft.get("registration"),
+        "callsign": flight.get("callsign"),
     }
     
     # display the flight info...
