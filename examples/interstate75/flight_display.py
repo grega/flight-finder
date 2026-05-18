@@ -1,3 +1,5 @@
+import builtins
+import gc
 import json
 import machine
 import network
@@ -10,6 +12,7 @@ from interstate75 import Interstate75
 from config import *
 
 import webserver
+import dashboard
 
 i75 = Interstate75(display=DISPLAY_TYPE, color_order=COLOR_ORDER)
 display = i75.display
@@ -44,9 +47,70 @@ def clear_display():
 # client sees a clean 200 rather than a dropped connection.
 _reboot_requested = False
 
-# Files the upload endpoint is allowed to write. Guards against path traversal
-# and stops a typo'd request from clobbering an unrelated file.
-_UPLOADABLE = ("main.py", "config.py")
+# Restrict /upload targets to safe Python module filenames: alphanumeric +
+# underscores, .py extension only. Prevents path traversal (no "/" or ".."),
+# hidden files, and writes outside the current working directory.
+# Hand-rolled char check: Pimoroni's MicroPython build omits str.isalnum().
+def _is_safe_upload_target(name):
+    if not name or not name.endswith(".py"):
+        return False
+    stem = name[:-3]
+    if not stem:
+        return False
+    for ch in stem:
+        if not (("a" <= ch <= "z") or ("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch == "_"):
+            return False
+    return True
+
+# Tick value captured at boot for uptime reporting via /status. Subject to the
+# ~24-day ticks_ms wraparound; good enough for "has it just rebooted" checks.
+_boot_ticks_ms = time.ticks_ms()
+
+# State tracked for /status. Updated by fetch_flight_data and display_flight_data.
+_last_fetch_ticks_ms = None
+_last_fetch_ok = None
+_last_fetch_error = None
+_current_flight_summary = None
+
+# In-memory circular log buffer fed by os.dupterm(). Size is RAM-only and never
+# written to flash; bumping it costs RAM but not storage.
+_LOG_BUFFER_BYTES = 4096
+
+class _LogBuffer:
+    """Fixed-size in-memory ring buffer for /logs.
+
+    Fed by a print() monkey-patch (see _install_log_capture). Lives entirely in
+    RAM - never persisted - so imposes zero storage cost regardless of uptime.
+    """
+    def __init__(self, size):
+        self.buf = bytearray()
+        self.size = size
+
+    def write(self, data):
+        self.buf.extend(data)
+        overflow = len(self.buf) - self.size
+        if overflow > 0:
+            del self.buf[:overflow]
+
+_log_buffer = _LogBuffer(_LOG_BUFFER_BYTES)
+
+def _install_log_capture():
+    """Replace builtins.print so every print() also lands in _log_buffer.
+
+    Avoids os.dupterm, which depends on the firmware's MICROPY_PY_OS_DUPTERM
+    slot count and the io.IOBase stream protocol - both of which proved unreliable
+    on the Pimoroni i75 build (writes never reached our stream).
+    """
+    original_print = builtins.print
+    def _captured_print(*args, **kwargs):
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        try:
+            _log_buffer.write((sep.join(str(a) for a in args) + end).encode())
+        except Exception:
+            pass # never let log capture break a print
+        return original_print(*args, **kwargs)
+    builtins.print = _captured_print
 
 def _handle_get_config(body, query):
     try:
@@ -62,8 +126,9 @@ def _handle_upload(body, query):
         if pair.startswith("path="):
             target = pair[len("path="):]
             break
-    if target not in _UPLOADABLE:
-        return (400, "text/plain", f"path must be one of {_UPLOADABLE}, got {target!r}")
+    if not _is_safe_upload_target(target):
+        return (400, "text/plain",
+                f"path must be a simple .py filename (eg. main.py, config.py, dashboard.py), got {target!r}")
     try:
         with open(target, "wb") as f:
             f.write(body)
@@ -76,15 +141,43 @@ def _handle_reboot(body, query):
     _reboot_requested = True
     return (200, "text/plain", "Rebooting")
 
+def _collect_status():
+    """Snapshot the current device + display state. Shared by /status (JSON)
+    and dashboard.render_status_html (HTML)."""
+    wlan = network.WLAN(network.STA_IF)
+    connected = wlan.isconnected()
+    uptime_s = time.ticks_diff(time.ticks_ms(), _boot_ticks_ms) // 1000
+    last_fetch_age_s = None
+    if _last_fetch_ticks_ms is not None:
+        last_fetch_age_s = time.ticks_diff(time.ticks_ms(), _last_fetch_ticks_ms) // 1000
+    return {
+        "uptime_s": uptime_s,
+        "free_heap_bytes": gc.mem_free(),
+        "alloc_heap_bytes": gc.mem_alloc(),
+        "wifi_connected": connected,
+        "ip": wlan.ifconfig()[0] if connected else None,
+        "rssi_dbm": wlan.status("rssi") if connected else None,
+        "last_fetch_age_s": last_fetch_age_s,
+        "last_fetch_ok": _last_fetch_ok,
+        "last_fetch_error": _last_fetch_error,
+        "current_flight": _current_flight_summary,
+    }
+
+def _handle_status(body, query):
+    return (200, "application/json", json.dumps(_collect_status()))
+
+def _handle_logs(body, query):
+    # Serve the entire ring buffer as plain text. Buffer is bounded so the
+    # response size is bounded; never touches flash.
+    return (200, "text/plain; charset=utf-8", bytes(_log_buffer.buf))
+
 def _handle_index(body, query):
-    return (200, "text/plain",
-            "Interstate 75 flight display\n"
-            "  GET  /config            - download current config.py\n"
-            "  POST /upload?path=main.py | config.py - write file\n"
-            "  POST /reboot            - machine.reset()\n")
+    return (200, "text/html; charset=utf-8", dashboard.render_status_html(_collect_status()))
 
 def register_routes():
     webserver.route("GET",  "/",        _handle_index)
+    webserver.route("GET",  "/status",  _handle_status)
+    webserver.route("GET",  "/logs",    _handle_logs)
     webserver.route("GET",  "/config",  _handle_get_config)
     webserver.route("POST", "/upload",  _handle_upload)
     webserver.route("POST", "/reboot",  _handle_reboot)
@@ -165,11 +258,13 @@ def is_quiet_period():
 
 def fetch_flight_data(api_key):
     """Fetch closest flight data from the API"""
+    global _last_fetch_ticks_ms, _last_fetch_ok, _last_fetch_error
+    _last_fetch_ticks_ms = time.ticks_ms()
     try:
         url = f"{API_URL}/closest-flight?lat={LATITUDE}&lon={LONGITUDE}&radius={RADIUS}"
         if ALTITUDE_CEILING_FT is not None:
             url += f"&max_altitude={ALTITUDE_CEILING_FT}"
-        
+
         headers = {
             "X-API-Key": api_key,
             "User-Agent": f"I75 Matrix Display {USER_AGENT_ID}"
@@ -182,9 +277,13 @@ def fetch_flight_data(api_key):
         if response.status_code == 200:
             data = response.json()
             print("Data received successfully")
+            _last_fetch_ok = True
+            _last_fetch_error = None
             return data
         else:
             print(f"API Error: {response.status_code}")
+            _last_fetch_ok = False
+            _last_fetch_error = f"HTTP {response.status_code}"
             display.set_pen(RED)
             display.clear()
             display.text(f"API Err", 2, 2, WIDTH, 1)
@@ -193,6 +292,8 @@ def fetch_flight_data(api_key):
 
     except Exception as e:
         print(f"Error fetching data: {e}")
+        _last_fetch_ok = False
+        _last_fetch_error = str(e)
         display.set_pen(RED)
         display.clear()
         display.text(f"Error", 2, 2, WIDTH, 1)
@@ -225,6 +326,8 @@ def format_altitude_ft(altitude_ft):
     
 def display_flight_data(data):
     """Display flight data on the screen"""
+    global _current_flight_summary
+
     display.set_pen(BLACK)
     display.clear()
 
@@ -236,25 +339,38 @@ def display_flight_data(data):
         unit = "km"
 
     if not data:
+        _current_flight_summary = None
         display.set_pen(YELLOW)
         display.text("No data returned", 2, 8, WIDTH, 1)
         i75.update()
         return
 
     if not data.get("found"):
+        _current_flight_summary = None
         display.set_pen(YELLOW)
         display.text(f"No flights in radius {round_value(RADIUS * distance_modifier)}{unit}", 2, 8, WIDTH, 1)
         i75.update()
         return
-    
+
     # extract data
     flight = data.get("flight", {})
     flight_number = data.get("flight", {}).get("number") or "N/A"
     aircraft_model = shorten_aircraft_model(flight.get("aircraft", {}).get("model") or "N/A")
     distance_km = round_value(data.get("distance_km", {}))
     distance = round_value(distance_km * distance_modifier)
-    origin = flight.get("route", {}).get("origin_iata") or "N/A"
-    destination = flight.get("route", {}).get("destination_iata") or "N/A"
+    route = flight.get("route", {})
+    origin = route.get("origin_iata") or "N/A"
+    destination = route.get("destination_iata") or "N/A"
+
+    _current_flight_summary = {
+        "flight_number": flight_number,
+        "aircraft_model": aircraft_model,
+        "distance_km": distance_km,
+        "origin_iata": origin,
+        "origin_name": route.get("origin_name"),
+        "destination_iata": destination,
+        "destination_name": route.get("destination_name"),
+    }
     
     # display the flight info...
     # line 1: origin > destination
@@ -400,6 +516,9 @@ def update_dynamic_display(elapsed_ms, cycle_info, state):
 
 def main():
     """Main function to connect to WiFi, fetch data, and display it"""
+    # Capture print() output into the in-memory ring buffer so /logs can serve
+    # it. Install first so we capture the boot sequence too.
+    _install_log_capture()
     print("BOOT: main() entered")
     try:
         from secrets import WIFI_PASSWORD, WIFI_SSID, FLIGHT_FINDER_API_KEY

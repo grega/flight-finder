@@ -13,7 +13,7 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
 Once connected to the I75 device:
-  - Copy `flight_display.py`, `config.py`, and `webserver.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
+  - Copy `flight_display.py`, `config.py`, `webserver.py`, and `dashboard.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
   - Edit `config.py`:
     - Set `API_URL` to the deployed Flight Finder Service
     - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
@@ -78,11 +78,12 @@ echo 192.168.1.42 > .push_host   # or: export I75_HOST=192.168.1.42
 Then:
 
 ```bash
-./push.py code            # push flight_display.py as main.py and reboot
-./push.py config fetch    # download device's config.py to _device/config.py
-./push.py config push     # upload _device/config.py and reboot
-./push.py reboot          # just reboot
-./push.py webserver       # rarely needed - push webserver.py and reboot
+./push.py code                  # push flight_display.py as main.py and reboot
+./push.py file dashboard.py     # push any other local .py file under its same name and reboot
+./push.py file webserver.py     #   (eg. iterating on dashboard styling, webserver tweaks)
+./push.py config fetch          # download device's config.py to _device/config.py
+./push.py config push           # upload _device/config.py and reboot
+./push.py reboot                # just reboot
 ```
 
 ### Editing per-device config
@@ -95,14 +96,16 @@ Per-device values (`LATITUDE`/`LONGITUDE`, `DISPLAY_TYPE`, quiet-hour settings, 
 
 ### Endpoints
 
-For reference, `webserver.py` exposes:
+For reference, the device exposes:
 
-- `GET /` — usage summary
+- `GET /` — HTML status dashboard (styled with [Pico CSS](https://picocss.com/) loaded from CDN; auto-refreshes every 5s). Visit `http://<device-ip>/` in a browser.
+- `GET /status` — JSON: uptime, free heap, WiFi RSSI, time since last API fetch + success/error, and the currently-displayed flight. Useful as a quick "is it alive and healthy" check (`curl http://<ip>/status | jq`).
+- `GET /logs` — recent `print()` output, captured via a `builtins.print` monkey-patch into a fixed-size RAM ring buffer (~4 KB). Never persisted to flash, so it imposes no storage cost regardless of run duration. Older lines are discarded as new ones arrive.
 - `GET /config` — returns the device's current `config.py`
-- `POST /upload?path=main.py` (or `?path=config.py`) — writes the request body to that file
+- `POST /upload?path=<filename>.py` — writes the request body to that file. The `path` is restricted to safe Python module names (alphanumeric + underscores, `.py` extension) to prevent path traversal or accidental clobbering of system files.
 - `POST /reboot` — `machine.reset()` after flushing the response
 
-The endpoint has no auth, so it assumes a trusted LAN. The upload `path` is restricted to an allowlist (`main.py`, `config.py`) to prevent path traversal or accidental clobbering of other files.
+The endpoints have no auth, so they assume a trusted LAN.
 
 ## Emulator
 
