@@ -186,15 +186,38 @@ def poll_webserver():
     """Service one HTTP request if pending, then reboot if /reboot was hit."""
     webserver.poll()
     if _reboot_requested:
-        time.sleep_ms(200) # let the response flush before resetting
+        # Give the FIN packet time to reach the client. 200ms was too short on
+        # slower/wifi networks - the chip would reset before the close had
+        # propagated, and the client saw an RST instead of a clean FIN.
+        time.sleep_ms(500)
         machine.reset()
 
 def network_connect(ssid, password):
     """Connect to WiFi network"""
     wlan = network.WLAN(network.STA_IF)
+
+    # Soft reboot fast path: if the chip is still associated from the previous
+    # run, just reuse the connection. Tearing it down only to re-establish it
+    # is the root cause of the "first attempt fails" pattern - the CYW43 hates
+    # being asked to reconnect to an AP it's still associated with.
+    try:
+        if wlan.isconnected() and wlan.status() == network.STAT_GOT_IP:
+            ip = wlan.ifconfig()[0]
+            print(f'Reusing existing WiFi connection: {ip}')
+            display.set_pen(BLACK)
+            display.clear()
+            display.set_pen(WHITE)
+            display.text("Connected", 2, 2, WIDTH, 1)
+            display.text(ip, 2, 13, WIDTH, 1)
+            i75.update()
+            return True
+    except Exception:
+        pass
+
+    # Cold boot path: chip needs full initialisation. The 2s delay after
+    # active(True) is essential - CYW43 returns from active(True) before the
+    # radio is actually ready, so an immediate connect() will time out.
     wlan.active(True)
-    # CYW43 returns from active(True) before the radio is actually ready.
-    # Without this delay the first connect() typically times out on a cold boot.
     time.sleep(2)
     wlan.config(pm=0xa11140) # turn WiFi power saving off for some slow APs
 

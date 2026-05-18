@@ -101,7 +101,10 @@ def _handle(conn):
         body_buf.extend(chunk)
 
     received = len(body_buf)
-    print(f"{method} {path} - Content-Length={content_length}, received={received}")
+    # Only log requests that carried a body (uploads); GETs are too noisy
+    # since the dashboard auto-refreshes every few seconds.
+    if content_length > 0:
+        print(f"{method} {path} - Content-Length={content_length}, received={received}")
 
     if received < content_length:
         # Refuse rather than write a truncated file. Tells push.py to retry.

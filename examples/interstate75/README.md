@@ -98,7 +98,7 @@ Per-device values (`LATITUDE`/`LONGITUDE`, `DISPLAY_TYPE`, quiet-hour settings, 
 
 For reference, the device exposes:
 
-- `GET /` — HTML status dashboard (styled with [Pico CSS](https://picocss.com/) loaded from CDN; auto-refreshes every 5s). Visit `http://<device-ip>/` in a browser.
+- `GET /` — HTML status dashboard (styled with [Pico CSS](https://picocss.com/) loaded from CDN; auto-refreshes every 5s). Renders the currently-displayed flight as a hero card (origin → destination IATA codes with airport names linking to Google Maps), device stats (uptime, heap, WiFi RSSI, last fetch), and a reboot button. Colors mirror the I75 display palette (yellow IATA, cyan flight number, magenta aircraft, blue distance). Visit `http://<device-ip>/` in a browser.
 - `GET /status` — JSON: uptime, free heap, WiFi RSSI, time since last API fetch + success/error, and the currently-displayed flight. Useful as a quick "is it alive and healthy" check (`curl http://<ip>/status | jq`).
 - `GET /logs` — recent `print()` output, captured via a `builtins.print` monkey-patch into a fixed-size RAM ring buffer (~4 KB). Never persisted to flash, so it imposes no storage cost regardless of run duration. Older lines are discarded as new ones arrive.
 - `GET /config` — returns the device's current `config.py`
