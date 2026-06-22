@@ -77,6 +77,7 @@ details pre { white-space: pre-wrap; font-size: 0.72rem; max-height: 14rem; over
     {key:"SCROLL_PAUSE_MS",         label:"Scroll pause (ms)", type:"number", step:"1"},
     {key:"SCROLL_SPEED_PX_PER_SEC", label:"Scroll speed (px/s)", type:"number", step:"1"},
     {section:"Quiet time"},
+    {key:"QUIET_ENABLED",      label:"Enable quiet time", type:"bool", "default":true},
     {key:"UTC_OFFSET",         label:"UTC offset (hours)", type:"number", step:"1"},
     {key:"QUIET_START_HOUR",   label:"Quiet start hour", type:"number", step:"1"},
     {key:"QUIET_START_MINUTE", label:"Quiet start minute", type:"number", step:"1"},
@@ -170,10 +171,14 @@ details pre { white-space: pre-wrap; font-size: 0.72rem; max-height: 14rem; over
   function hydrate(text){
     FIELDS.forEach(function(f){
       if(!f.key) return;
-      var raw = getRaw(text, f.key);
-      if(raw == null) return;
       var e = document.getElementById("f_" + f.key);
       if(!e) return;
+      var raw = getRaw(text, f.key);
+      if(raw == null){
+        // if key absent from config apply the field's default so a save doesn't write a misleading value
+        if(f.type === "bool" && f["default"] != null) e.checked = f["default"];
+        return;
+      }
       if(f.type === "bool") e.checked = (raw === "True");
       else if(f.type === "number") e.value = raw;
       else if(f.type === "number_or_none") e.value = (raw === "None" ? "" : raw);
