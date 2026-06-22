@@ -161,11 +161,11 @@ def _collect_status():
         "last_fetch_ok": _last_fetch_ok,
         "last_fetch_error": _last_fetch_error,
         "current_flight": _current_flight_summary,
-        # Surface the unit prefs from config.py so the dashboard can match the
-        # display (km/mi for distance, ft/m for altitude).
+        # Surface a few config.py values so the dashboard can match the display (km/mi for distance, ft/m for altitude) and show how often the device fetches new flight data
         "config": {
             "distance_unit": DISTANCE_UNIT,
             "altitude_unit": ALTITUDE_UNIT,
+            "refresh_interval_s": REFRESH_INTERVAL,
         },
     }
 
@@ -337,10 +337,46 @@ def fetch_flight_data(api_key):
         if 'response' in locals():
             response.close()
 
+# Helpers using explicit ranges since the Pimoroni MicroPython build omits str.isdigit()/isalpha()/isalnum()
+def _is_digit(ch):
+    return "0" <= ch <= "9"
+
+def _is_alpha(ch):
+    return ("a" <= ch <= "z") or ("A" <= ch <= "Z")
+
 def shorten_aircraft_model(model):
-    """Drop the variant suffix (anything after '-') for display."""
-    if '-' in model:
-        model = model.split('-')[0] # eg. remove "-132" from "Airbus A319-132"
+    """Trim an aircraft model string to a concise designator for display.
+
+    The aim is to drop noise we don't care about (numeric variant suffixes and
+    trailing marketing names) while keeping hyphens that are part of the type
+    designator itself:
+
+      "Airbus A319-132"              -> "Airbus A319"
+      "Boeing 787-900"               -> "Boeing 787"
+      "Boeing 737 MAX 8"             -> "Boeing 737"
+      "Boeing C-17A Globemaster III" -> "Boeing C-17"
+      "McDonnell Douglas MD-11F"     -> "McDonnell Douglas MD-11"
+
+    The original code split on the first '-', which mangled designators with an
+    internal hyphen ("Boeing C-17A..." became just "Boeing C").
+    """
+    # Keep manufacturer + designator (first token with a digit); drop trailing marketing words
+    tokens = model.split()
+    for idx in range(len(tokens)):
+        if any(_is_digit(ch) for ch in tokens[idx]):
+            model = " ".join(tokens[:idx + 1])
+            break
+
+    # Cut a numeric variant at a digit-led hyphen ("-132"); leave designator hyphens ("C-17")
+    i = model.find("-")
+    while i != -1:
+        if i > 0 and _is_digit(model[i - 1]):
+            return model[:i]
+        i = model.find("-", i + 1)
+
+    # Otherwise drop a single trailing variant letter after a digit ("C-17A" -> "C-17")
+    if "-" in model and len(model) >= 2 and _is_alpha(model[-1]) and _is_digit(model[-2]):
+        return model[:-1]
     return model
 
 def round_value(value):
