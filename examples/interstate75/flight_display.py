@@ -119,6 +119,14 @@ def _handle_get_config(body, query):
     except OSError as e:
         return (500, "text/plain", f"Cannot read config.py: {e}")
 
+def _handle_config_editor(body, query):
+    # Imported lazily so its page string only costs heap once the editor is used (and a reboot after saving clears it again)
+    try:
+        import config_editor
+    except ImportError:
+        return (500, "text/plain", "config_editor.py is not on the device")
+    return (200, "text/html; charset=utf-8", config_editor.render())
+
 def _handle_upload(body, query):
     # query is the raw query string, eg. "path=main.py"
     target = None
@@ -181,12 +189,13 @@ def _handle_index(body, query):
     return (200, "text/html; charset=utf-8", dashboard.render_status_html(_collect_status()))
 
 def register_routes():
-    webserver.route("GET",  "/",        _handle_index)
-    webserver.route("GET",  "/status",  _handle_status)
-    webserver.route("GET",  "/logs",    _handle_logs)
-    webserver.route("GET",  "/config",  _handle_get_config)
-    webserver.route("POST", "/upload",  _handle_upload)
-    webserver.route("POST", "/reboot",  _handle_reboot)
+    webserver.route("GET",  "/",              _handle_index)
+    webserver.route("GET",  "/status",        _handle_status)
+    webserver.route("GET",  "/logs",          _handle_logs)
+    webserver.route("GET",  "/config",        _handle_get_config)
+    webserver.route("GET",  "/config-editor", _handle_config_editor)
+    webserver.route("POST", "/upload",        _handle_upload)
+    webserver.route("POST", "/reboot",        _handle_reboot)
 
 def poll_webserver():
     """Service one HTTP request if pending, then reboot if /reboot was hit."""

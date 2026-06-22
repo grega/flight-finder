@@ -119,7 +119,20 @@ _STYLES = """
   letter-spacing: 0.02em;
 }
 .refresh-badge.offline { color: var(--i75-red); }
-h1 { margin-bottom: 0.25rem; }
+.dash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  flex-wrap: wrap;
+}
+.dash-header .edit-config {
+  width: auto;
+  margin: 0 0 0.5rem;
+  white-space: nowrap;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+}
 @media (prefers-color-scheme: dark) {
   :root {
     --i75-yellow: #e0c060;
@@ -321,10 +334,11 @@ _HEAD = (
     f'<link rel="stylesheet" href="{_PICO_CSS}">'
     f'<style>{_STYLES}</style>'
     '</head><body><main class="container">'
-    '<header>'
+    '<header class="dash-header">'
     '<h1>Interstate 75 Flight Display'
     '<span class="refresh-badge" id="refresh-badge" title="auto-updates via /status">&#x21bb; live</span>'
     '</h1>'
+    '<a href="/config-editor" role="button" class="edit-config">&#9881; Edit config</a>'
     '</header>'
     '<article id="flight-card"></article>'
     '<article id="device-card"></article>'

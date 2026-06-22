@@ -13,7 +13,7 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
 Once connected to the I75 device:
-  - Copy `flight_display.py`, `config.py`, `webserver.py`, and `dashboard.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
+  - Copy `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, and `config_editor.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
   - Edit `config.py`:
     - Set `API_URL` to the deployed Flight Finder Service
     - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
@@ -90,20 +90,21 @@ Then:
 
 Per-device values (`LATITUDE`/`LONGITUDE`, `DISPLAY_TYPE`, quiet-hour settings, etc.) live on the device itself, not in the repo. The workflow is:
 
-1. `./push.py config fetch` — pulls the device's current `config.py` into `_device/config.py` (gitignored).
+1. `./push.py config fetch` - pulls the device's current `config.py` into `_device/config.py` (gitignored).
 2. Edit `_device/config.py` locally in your editor.
-3. `./push.py config push` — uploads it back and reboots.
+3. `./push.py config push` - uploads it back and reboots.
 
 ### Endpoints
 
 For reference, the device exposes:
 
-- `GET /` — HTML status dashboard (styled with [Pico CSS](https://picocss.com/) loaded from CDN; auto-refreshes every 5s). Renders the currently-displayed flight as a hero card (origin → destination IATA codes with airport names linking to Google Maps), device stats (uptime, heap, WiFi RSSI, last fetch), and a reboot button. Colors mirror the I75 display palette (yellow IATA, cyan flight number, magenta aircraft, blue distance). Visit `http://<device-ip>/` in a browser.
-- `GET /status` — JSON: uptime, free heap, WiFi RSSI, time since last API fetch + success/error, and the currently-displayed flight. Useful as a quick "is it alive and healthy" check (`curl http://<ip>/status | jq`).
-- `GET /logs` — recent `print()` output, captured via a `builtins.print` monkey-patch into a fixed-size RAM ring buffer (~4 KB). Never persisted to flash, so it imposes no storage cost regardless of run duration. Older lines are discarded as new ones arrive.
-- `GET /config` — returns the device's current `config.py`
-- `POST /upload?path=<filename>.py` — writes the request body to that file. The `path` is restricted to safe Python module names (alphanumeric + underscores, `.py` extension) to prevent path traversal or accidental clobbering of system files.
-- `POST /reboot` — `machine.reset()` after flushing the response
+- `GET /` - HTML status dashboard (styled with [Pico CSS](https://picocss.com/) loaded from CDN). Served as a lightweight static shell that hydrates from `/status` JSON on first paint and then re-polls every 5s. Renders the currently-displayed flight as a hero card (origin → destination IATA codes with airport names linking to Google Maps), device stats (uptime, heap, WiFi RSSI, last fetch, fetch interval), and a reboot button. Visit `http://<device-ip>/` in a browser.
+- `GET /status` - JSON: uptime, free heap, WiFi RSSI, time since last API fetch + success/error, and the currently-displayed flight. Useful as a quick "is it alive and healthy" check (`curl http://<ip>/status | jq`).
+- `GET /config-editor` - HTML form for editing the device's `config.py` from a browser (served by `config_editor.py`, imported lazily on first use). Loads the current values via `GET /config`, lets you edit the simple settings (location, units, scrolling, quiet hours, refresh interval, etc.), and on save rewrites only those values preserving comments, layout, and the `DISPLAY_TYPE`/`COLOR_ORDER` expressions, before pushing the file back via `/upload` and rebooting.
+- `GET /logs` - recent `print()` output, captured via a `builtins.print` monkey-patch into a fixed-size RAM ring buffer (~4 KB). Never persisted to flash, so it imposes no storage cost regardless of run duration. Older lines are discarded as new ones arrive.
+- `GET /config` - returns the device's current `config.py`
+- `POST /upload?path=<filename>.py` - writes the request body to that file. The `path` is restricted to safe Python module names (alphanumeric + underscores, `.py` extension) to prevent path traversal or accidental clobbering of system files.
+- `POST /reboot` - `machine.reset()` after flushing the response
 
 The endpoints have no auth, so they assume a trusted LAN.
 
