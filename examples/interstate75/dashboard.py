@@ -13,15 +13,14 @@ import json
 _PICO_CSS = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"
 _REFRESH_SECONDS = 5
 
-# Inline ~plane SVG used as the page favicon (avoids a separate file/endpoint).
+# Inline ~plane SVG used as the page favicon (avoids a separate file/endpoint)
 _FAVICON = (
     'data:image/svg+xml,'
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
     "<text y='.9em' font-size='90'>%E2%9C%88</text></svg>"
 )
 
-# Soft pastel palette mirroring the I75 display colors. Tuned for readable text
-# on a light background (the saturated raw display values would be illegible).
+# Palette mirroring the I75 display colors
 # The hue mapping matches what the display uses:
 #   YELLOW  -> route / IATA codes (display line 1)
 #   CYAN    -> flight number (display line 2, first segment)
@@ -135,13 +134,20 @@ h1 { margin-bottom: 0.25rem; }
 }
 """
 
-# Client-side rendering. A faithful port of the old server-side renderers; the
-# device now just ships the /status JSON and this fills in the DOM. Kept as a
-# module-level constant so it isn't rebuilt per request.
 _SCRIPT = """
 (function(){
   "use strict";
   var REFRESH_MS = window.__REFRESH_MS__ || 5000;
+
+  // Last-known airport name per IATA code. The API sometimes returns a flight
+  // with only the IATA code and no resolved airport name; without this the name
+  // under the code would blank out on that poll. Remember names we've seen and
+  // reuse them for the same code so the panel stays populated.
+  var nameCache = {};
+  function resolveName(iata, name){
+    if(name){ if(iata) nameCache[iata] = name; return name; }
+    return iata && nameCache[iata] ? nameCache[iata] : '';
+  }
 
   function esc(s){
     if(s==null) return '';
@@ -235,17 +241,20 @@ _SCRIPT = """
     var url = fr24Url(f);
     var fr24 = url ? '<p class="fr24-link"><a href="'+url+'" target="_blank" rel="noopener">&#x2197; Track on FlightRadar24</a></p>' : '';
 
+    var originName = resolveName(f.origin_iata, f.origin_name);
+    var destName = resolveName(f.destination_iata, f.destination_name);
+
     return '<header>Current flight</header>'+
       '<p class="hero-flight-no"><strong>'+esc(f.flight_number)+'</strong></p>'+
       '<div class="hero-route">'+
       '<div class="leg">'+
       '<span class="iata">'+iataLink(f.origin_iata)+'</span>'+
-      '<span class="airport-name">'+mapsLink(f.origin_name)+'</span>'+
+      '<span class="airport-name">'+mapsLink(originName)+'</span>'+
       '</div>'+
       '<span class="arrow">&rarr;</span>'+
       '<div class="leg">'+
       '<span class="iata">'+iataLink(f.destination_iata)+'</span>'+
-      '<span class="airport-name">'+mapsLink(f.destination_name)+'</span>'+
+      '<span class="airport-name">'+mapsLink(destName)+'</span>'+
       '</div>'+
       '</div>'+
       '<p class="hero-meta">'+meta.join(' &middot; ')+'</p>'+
@@ -256,6 +265,8 @@ _SCRIPT = """
     var fetch = 'n/a';
     if(info.last_fetch_ok===true) fetch='<span class="fetch-ok">OK</span>';
     else if(info.last_fetch_ok===false) fetch='<span class="fetch-fail">FAIL: '+esc(info.last_fetch_error)+'</span>';
+    var interval = (info.config && info.config.refresh_interval_s!=null)
+      ? 'every '+info.config.refresh_interval_s+'s' : 'n/a';
     return '<header>Device</header>'+
       '<table>'+
       '<tr><th>IP</th><td>'+esc(info.ip)+'</td></tr>'+
@@ -263,6 +274,7 @@ _SCRIPT = """
       '<tr><th>WiFi RSSI</th><td>'+rssiLabel(info.rssi_dbm)+'</td></tr>'+
       '<tr><th>Free heap</th><td>'+fmtBytes(info.free_heap_bytes)+' (alloc: '+fmtBytes(info.alloc_heap_bytes)+')</td></tr>'+
       '<tr><th>Last fetch</th><td>'+fmtAge(info.last_fetch_age_s)+' &middot; '+fetch+'</td></tr>'+
+      '<tr><th>Fetch interval</th><td>'+interval+'</td></tr>'+
       '</table>';
   }
 
@@ -300,7 +312,7 @@ _SCRIPT = """
 })();
 """
 
-# Static parts, assembled once at import (only the embedded JSON varies per request).
+# Static parts, assembled once at import (only the embedded JSON varies per request)
 _HEAD = (
     '<!DOCTYPE html>'
     '<html lang="en"><head><meta charset="utf-8">'
@@ -330,8 +342,7 @@ _HEAD = (
 def render_status_html(info):
     """Render the page shell with the status info (same shape as /status JSON)
     embedded for first paint. All further updates are client-side via /status."""
-    # Escape '<' so the embedded JSON can never terminate the <script> early or
-    # inject markup (json.dumps does not escape '<' by default).
+    # Escape '<' so the embedded JSON can never terminate the <script> early or inject markup (json.dumps does not escape '<' by default)
     initial = json.dumps(info).replace("<", "\\u003c")
     return (
         _HEAD
