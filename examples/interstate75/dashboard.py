@@ -1,5 +1,14 @@
 """HTML rendering for the device status dashboard, served at /
+
+The page is a static shell that hydrates itself from /status JSON: once on first
+paint (from data embedded in the page, so there's no extra round-trip) and then
+on a timer. All formatting/rendering lives in the browser (the JS below), so the
+device only ever serializes a small JSON snapshot per poll instead of rebuilding
+~10KB of HTML every few seconds. The previous server-side renderers (and their
+per-request string building) are gone as a result.
 """
+
+import json
 
 _PICO_CSS = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"
 _REFRESH_SECONDS = 5
@@ -111,6 +120,7 @@ _STYLES = """
   vertical-align: middle;
   letter-spacing: 0.02em;
 }
+.refresh-badge.offline { color: var(--i75-red); }
 h1 { margin-bottom: 0.25rem; }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -125,291 +135,208 @@ h1 { margin-bottom: 0.25rem; }
 }
 """
 
-# Reboot via fetch() so the button is just a button (not a full-width form).
-# Reloads the page after the device responds to confirm the reboot was accepted.
-_REBOOT_JS = (
-    "if(confirm('Reboot the device?')){"
-    "fetch('/reboot',{method:'POST'})"
-    ".then(()=>{document.body.style.opacity='.4';setTimeout(()=>location.reload(),3000)})"
-    ".catch(e=>alert('Reboot failed: '+e))"
-    "}"
+# Client-side rendering. A faithful port of the old server-side renderers; the
+# device now just ships the /status JSON and this fills in the DOM. Kept as a
+# module-level constant so it isn't rebuilt per request.
+_SCRIPT = """
+(function(){
+  "use strict";
+  var REFRESH_MS = window.__REFRESH_MS__ || 5000;
+
+  function esc(s){
+    if(s==null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  // URL-encode for a query param; spaces -> '+'. encodeURIComponent leaves
+  // -_.!~*'() unescaped, which Google Maps / FR24 handle fine.
+  function urlQuotePlus(s){ return s ? encodeURIComponent(s).replace(/%20/g,'+') : ''; }
+
+  function mapsLink(name){
+    if(!name) return '';
+    return '<a href="https://www.google.com/maps/search/?api=1&query='+urlQuotePlus(name)+'">'+esc(name)+'</a>';
+  }
+  function iataLink(iata){
+    if(!iata) return iata || '';
+    var q = urlQuotePlus(iata + ' airport');
+    return '<a href="https://www.google.com/maps/search/?api=1&query='+q+'">'+esc(iata)+'</a>';
+  }
+  function fmtIntWithCommas(n){ return Math.trunc(n).toLocaleString('en-US'); }
+  function fmtAltitude(ft, unit){
+    if(ft==null) return '';
+    if(unit==='m') return fmtIntWithCommas(Math.round(ft*0.3048))+' m';
+    return fmtIntWithCommas(ft)+' ft';
+  }
+  function fmtDistance(km, unit){
+    if(km==null) return '';
+    var v = unit==='mi' ? km*0.621371 : km;
+    v = v>=1 ? Math.round(v) : Math.round(v*10)/10;
+    return v+' '+unit;
+  }
+  function verticalArrow(vs){
+    if(vs==null) return '';
+    if(vs>100) return ' <span class="vs-up" title="climbing">&#x2191;</span>';
+    if(vs<-100) return ' <span class="vs-down" title="descending">&#x2193;</span>';
+    return ' <span class="vs-level" title="level">&mdash;</span>';
+  }
+  function compass(deg){
+    if(deg==null) return '';
+    var dirs=['N','NE','E','SE','S','SW','W','NW'];
+    return dirs[Math.floor((deg+22.5)/45)%8];
+  }
+  function fr24Url(f){
+    if(f.callsign) return 'https://www.flightradar24.com/'+urlQuotePlus(f.callsign);
+    var fn = f.flight_number;
+    if(fn && fn!=='N/A') return 'https://www.flightradar24.com/data/flights/'+urlQuotePlus(fn.toLowerCase());
+    return null;
+  }
+  function rssiLabel(r){
+    if(r==null) return 'n/a';
+    if(r>=-50) return r+' dBm (excellent)';
+    if(r>=-65) return r+' dBm (good)';
+    if(r>=-75) return r+' dBm (fair)';
+    return r+' dBm (poor)';
+  }
+  function fmtUptime(s){
+    if(s==null) return 'n/a';
+    var h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+    if(h) return h+'h '+m+'m '+sec+'s';
+    if(m) return m+'m '+sec+'s';
+    return sec+'s';
+  }
+  function fmtAge(a){ return a==null ? 'never' : a+'s ago'; }
+  function fmtBytes(n){
+    if(n==null) return 'n/a';
+    return n>=1024 ? Math.floor(n/1024)+' KB' : n+' bytes';
+  }
+
+  function renderFlight(f, config){
+    if(!f){
+      return '<header>Current flight</header>'+
+        '<p style="text-align:center;margin:1rem 0;color:var(--pico-muted-color)">'+
+        '<em>No flight currently displayed.</em></p>';
+    }
+    var distUnit = (config && config.distance_unit) || 'km';
+    var altUnit  = (config && config.altitude_unit) || 'ft';
+
+    var meta = ['<span class="aircraft">'+esc(f.aircraft_model)+'</span>'];
+    var d = fmtDistance(f.distance_km, distUnit);
+    if(d) meta.push('<span class="distance">'+d+'</span>');
+    var a = fmtAltitude(f.altitude_ft, altUnit);
+    if(a) meta.push('<span class="altitude">'+a+'</span>'+verticalArrow(f.vertical_speed));
+
+    var sub = [];
+    if(f.registration) sub.push('<span class="reg">'+esc(f.registration)+'</span>');
+    if(f.callsign) sub.push('<span class="callsign">'+esc(f.callsign)+'</span>');
+    if(f.ground_speed!=null) sub.push('<span class="speed">'+Math.trunc(f.ground_speed)+' kts</span>');
+    if(f.heading!=null) sub.push('<span class="heading">'+compass(f.heading)+' ('+Math.trunc(f.heading)+'&deg;)</span>');
+    var subHtml = sub.length ? '<p class="hero-sub-meta">'+sub.join(' &middot; ')+'</p>' : '';
+
+    var url = fr24Url(f);
+    var fr24 = url ? '<p class="fr24-link"><a href="'+url+'" target="_blank" rel="noopener">&#x2197; Track on FlightRadar24</a></p>' : '';
+
+    return '<header>Current flight</header>'+
+      '<p class="hero-flight-no"><strong>'+esc(f.flight_number)+'</strong></p>'+
+      '<div class="hero-route">'+
+      '<div class="leg">'+
+      '<span class="iata">'+iataLink(f.origin_iata)+'</span>'+
+      '<span class="airport-name">'+mapsLink(f.origin_name)+'</span>'+
+      '</div>'+
+      '<span class="arrow">&rarr;</span>'+
+      '<div class="leg">'+
+      '<span class="iata">'+iataLink(f.destination_iata)+'</span>'+
+      '<span class="airport-name">'+mapsLink(f.destination_name)+'</span>'+
+      '</div>'+
+      '</div>'+
+      '<p class="hero-meta">'+meta.join(' &middot; ')+'</p>'+
+      subHtml+fr24;
+  }
+
+  function renderDevice(info){
+    var fetch = 'n/a';
+    if(info.last_fetch_ok===true) fetch='<span class="fetch-ok">OK</span>';
+    else if(info.last_fetch_ok===false) fetch='<span class="fetch-fail">FAIL: '+esc(info.last_fetch_error)+'</span>';
+    return '<header>Device</header>'+
+      '<table>'+
+      '<tr><th>IP</th><td>'+esc(info.ip)+'</td></tr>'+
+      '<tr><th>Uptime</th><td>'+fmtUptime(info.uptime_s)+'</td></tr>'+
+      '<tr><th>WiFi RSSI</th><td>'+rssiLabel(info.rssi_dbm)+'</td></tr>'+
+      '<tr><th>Free heap</th><td>'+fmtBytes(info.free_heap_bytes)+' (alloc: '+fmtBytes(info.alloc_heap_bytes)+')</td></tr>'+
+      '<tr><th>Last fetch</th><td>'+fmtAge(info.last_fetch_age_s)+' &middot; '+fetch+'</td></tr>'+
+      '</table>';
+  }
+
+  function render(info){
+    document.getElementById('flight-card').innerHTML = renderFlight(info.current_flight, info.config || {});
+    document.getElementById('device-card').innerHTML = renderDevice(info);
+  }
+
+  var badge;
+  function setBadge(text, offline){
+    badge = badge || document.getElementById('refresh-badge');
+    if(!badge) return;
+    badge.textContent = text;
+    badge.classList.toggle('offline', !!offline);
+  }
+
+  function refresh(){
+    fetch('/status', {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+      .then(function(info){ render(info); setBadge('\\u21bb live', false); })
+      .catch(function(){ setBadge('\\u26a0 offline', true); });
+  }
+
+  window.reboot = function(){
+    if(confirm('Reboot the device?')){
+      fetch('/reboot',{method:'POST'})
+        .then(function(){ document.body.style.opacity='.4'; setTimeout(function(){location.reload();}, 3000); })
+        .catch(function(e){ alert('Reboot failed: '+e); });
+    }
+  };
+
+  // First paint from data embedded in the page (no round-trip), then poll.
+  if(window.__INITIAL__) render(window.__INITIAL__);
+  setInterval(refresh, REFRESH_MS);
+})();
+"""
+
+# Static parts, assembled once at import (only the embedded JSON varies per request).
+_HEAD = (
+    '<!DOCTYPE html>'
+    '<html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>I75 Flight Display</title>'
+    f'<link rel="icon" href="{_FAVICON}">'
+    f'<link rel="stylesheet" href="{_PICO_CSS}">'
+    f'<style>{_STYLES}</style>'
+    '</head><body><main class="container">'
+    '<header>'
+    '<h1>Interstate 75 Flight Display'
+    '<span class="refresh-badge" id="refresh-badge" title="auto-updates via /status">&#x21bb; live</span>'
+    '</h1>'
+    '</header>'
+    '<article id="flight-card"></article>'
+    '<article id="device-card"></article>'
+    '<footer class="dashboard-footer">'
+    '<a href="/status">/status (JSON)</a>'
+    '<a href="/logs">/logs</a>'
+    '<a href="/config">/config</a>'
+    '<button type="button" class="secondary outline" onclick="reboot()">Reboot</button>'
+    '</footer>'
+    '</main>'
 )
 
 
-def _rssi_label(rssi):
-    if rssi is None:
-        return "n/a"
-    if rssi >= -50: return f"{rssi} dBm (excellent)"
-    if rssi >= -65: return f"{rssi} dBm (good)"
-    if rssi >= -75: return f"{rssi} dBm (fair)"
-    return f"{rssi} dBm (poor)"
-
-
-def _fmt_uptime(seconds):
-    if seconds is None:
-        return "n/a"
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h: return f"{h}h {m}m {s}s"
-    if m: return f"{m}m {s}s"
-    return f"{s}s"
-
-
-def _fmt_age(age_s):
-    if age_s is None:
-        return "never"
-    return f"{age_s}s ago"
-
-
-def _fmt_bytes(n):
-    if n is None:
-        return "n/a"
-    return f"{n // 1024} KB" if n >= 1024 else f"{n} bytes"
-
-
-def _esc(s):
-    if s is None:
-        return ""
-    return (str(s)
-            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            .replace('"', "&quot;"))
-
-
-def _url_quote_plus(s):
-    """URL-encode a string for use in a query parameter; spaces become '+'.
-
-    Stand-in for urllib.parse.quote_plus (not available on MicroPython).
-    Safe chars pass through, spaces become +, everything else is %HH-encoded
-    byte-by-byte (so UTF-8 in airport names works correctly).
-    """
-    if not s:
-        return ""
-    out = []
-    for ch in s:
-        if ("a" <= ch <= "z") or ("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch in "-_.~":
-            out.append(ch)
-        elif ch == " ":
-            out.append("+")
-        else:
-            for b in ch.encode("utf-8"):
-                out.append("%%%02X" % b)
-    return "".join(out)
-
-
-def _maps_link(name):
-    """Render an airport name as a link to Google Maps, or empty if unknown."""
-    if not name:
-        return ''
-    return f'<a href="https://www.google.com/maps/search/?api=1&query={_url_quote_plus(name)}">{_esc(name)}</a>'
-
-
-def _iata_link(iata):
-    """Render an IATA code as a link to Google Maps (fallback when no full
-    airport name is available from the API). Maps recognises eg. 'LAX airport'.
-    """
-    if not iata:
-        return iata or ''
-    query = _url_quote_plus(iata + " airport")
-    return f'<a href="https://www.google.com/maps/search/?api=1&query={query}">{_esc(iata)}</a>'
-
-
-def _fmt_int_with_commas(n):
-    """Insert thousands separators into an integer (12000 -> '12,000')."""
-    s = str(abs(int(n)))
-    parts = []
-    while len(s) > 3:
-        parts.insert(0, s[-3:])
-        s = s[:-3]
-    parts.insert(0, s)
-    return ("-" if n < 0 else "") + ",".join(parts)
-
-
-def _fmt_altitude(ft, unit):
-    """Format altitude, converting to meters if `unit` is 'm'."""
-    if ft is None:
-        return ""
-    if unit == "m":
-        return f"{_fmt_int_with_commas(round(ft * 0.3048))} m"
-    return f"{_fmt_int_with_commas(ft)} ft"
-
-
-def _fmt_distance(km, unit):
-    """Format distance, converting to miles if `unit` is 'mi'."""
-    if km is None:
-        return ""
-    if unit == "mi":
-        value = km * 0.621371
-    else:
-        value = km
-    # Match flight_display's rounding: whole number above 1, 1 decimal below
-    if value >= 1:
-        value = round(value)
-    else:
-        value = round(value, 1)
-    return f"{value} {unit}"
-
-
-def _vertical_arrow(vs):
-    """Climb/descent indicator from vertical_speed (fpm). Below |100| = level.
-
-    Returns an HTML span with the appropriate class for color-coding, or ''
-    if vertical_speed is missing.
-    """
-    if vs is None:
-        return ""
-    if vs > 100:
-        return ' <span class="vs-up" title="climbing">&#x2191;</span>'
-    if vs < -100:
-        return ' <span class="vs-down" title="descending">&#x2193;</span>'
-    return ' <span class="vs-level" title="level">&mdash;</span>'
-
-
-def _compass(deg):
-    """Heading in degrees -> 8-point compass label."""
-    if deg is None:
-        return ""
-    dirs = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-    return dirs[int((deg + 22.5) / 45) % 8]
-
-
-def _fr24_url(flight):
-    """Build a FlightRadar24 URL for the flight. Callsign first (live tracking),
-    falling back to flight number (historical data page)."""
-    callsign = flight.get("callsign")
-    if callsign:
-        return f"https://www.flightradar24.com/{_url_quote_plus(callsign)}"
-    fn = flight.get("flight_number")
-    if fn and fn != "N/A":
-        return f"https://www.flightradar24.com/data/flights/{_url_quote_plus(fn.lower())}"
-    return None
-
-
-def _render_flight(flight, config):
-    if not flight:
-        return (
-            '<article>'
-            '<header>Current flight</header>'
-            '<p style="text-align:center;margin:1rem 0;color:var(--pico-muted-color)">'
-            '<em>No flight currently displayed.</em></p>'
-            '</article>'
-        )
-    origin_iata = flight.get("origin_iata")
-    destination_iata = flight.get("destination_iata")
-    origin_name = flight.get("origin_name")
-    destination_name = flight.get("destination_name")
-
-    distance_unit = config.get("distance_unit", "km")
-    altitude_unit = config.get("altitude_unit", "ft")
-
-    # Line 1: aircraft model + distance + altitude (with climb/descend arrow).
-    # Each segment is omitted gracefully if the underlying field is missing.
-    meta_parts = [f'<span class="aircraft">{_esc(flight.get("aircraft_model"))}</span>']
-    distance_text = _fmt_distance(flight.get("distance_km"), distance_unit)
-    if distance_text:
-        meta_parts.append(f'<span class="distance">{distance_text}</span>')
-    altitude_text = _fmt_altitude(flight.get("altitude_ft"), altitude_unit)
-    if altitude_text:
-        meta_parts.append(f'<span class="altitude">{altitude_text}</span>{_vertical_arrow(flight.get("vertical_speed"))}')
-
-    # Line 2: registration / callsign / ground speed / heading. All optional;
-    # if every field is missing the whole row is dropped.
-    sub_parts = []
-    reg = flight.get("registration")
-    if reg:
-        sub_parts.append(f'<span class="reg">{_esc(reg)}</span>')
-    callsign = flight.get("callsign")
-    if callsign:
-        sub_parts.append(f'<span class="callsign">{_esc(callsign)}</span>')
-    gs = flight.get("ground_speed")
-    if gs is not None:
-        sub_parts.append(f'<span class="speed">{int(gs)} kts</span>')
-    heading = flight.get("heading")
-    if heading is not None:
-        sub_parts.append(f'<span class="heading">{_compass(heading)} ({int(heading)}&deg;)</span>')
-
-    sub_meta_html = ""
-    if sub_parts:
-        sub_meta_html = f'<p class="hero-sub-meta">{" &middot; ".join(sub_parts)}</p>'
-
-    fr24_url = _fr24_url(flight)
-    fr24_html = ""
-    if fr24_url:
-        fr24_html = f'<p class="fr24-link"><a href="{fr24_url}" target="_blank" rel="noopener">&#x2197; Track on FlightRadar24</a></p>'
-
-    return (
-        '<article>'
-        '<header>Current flight</header>'
-        f'<p class="hero-flight-no"><strong>{_esc(flight.get("flight_number"))}</strong></p>'
-        '<div class="hero-route">'
-        '<div class="leg">'
-        # IATA is wrapped in a link too, so it's still clickable when the API
-        # didn't give us a full airport name to display below.
-        f'<span class="iata">{_iata_link(origin_iata)}</span>'
-        f'<span class="airport-name">{_maps_link(origin_name)}</span>'
-        '</div>'
-        '<span class="arrow">&rarr;</span>'
-        '<div class="leg">'
-        f'<span class="iata">{_iata_link(destination_iata)}</span>'
-        f'<span class="airport-name">{_maps_link(destination_name)}</span>'
-        '</div>'
-        '</div>'
-        f'<p class="hero-meta">{" &middot; ".join(meta_parts)}</p>'
-        f'{sub_meta_html}'
-        f'{fr24_html}'
-        '</article>'
-    )
-
-
-def _render_device(info):
-    fetch_status = "n/a"
-    if info["last_fetch_ok"] is True:
-        fetch_status = '<span class="fetch-ok">OK</span>'
-    elif info["last_fetch_ok"] is False:
-        fetch_status = f'<span class="fetch-fail">FAIL: {_esc(info["last_fetch_error"])}</span>'
-    return (
-        '<article>'
-        '<header>Device</header>'
-        '<table>'
-        f'<tr><th>IP</th><td>{_esc(info["ip"])}</td></tr>'
-        f'<tr><th>Uptime</th><td>{_fmt_uptime(info["uptime_s"])}</td></tr>'
-        f'<tr><th>WiFi RSSI</th><td>{_rssi_label(info["rssi_dbm"])}</td></tr>'
-        f'<tr><th>Free heap</th><td>{_fmt_bytes(info["free_heap_bytes"])} (alloc: {_fmt_bytes(info["alloc_heap_bytes"])})</td></tr>'
-        f'<tr><th>Last fetch</th><td>{_fmt_age(info["last_fetch_age_s"])} &middot; {fetch_status}</td></tr>'
-        '</table>'
-        '</article>'
-    )
-
-
-def _render_footer():
-    return (
-        '<footer class="dashboard-footer">'
-        '<a href="/status">/status (JSON)</a>'
-        '<a href="/logs">/logs</a>'
-        '<a href="/config">/config</a>'
-        f'<button type="button" class="secondary outline" onclick="{_REBOOT_JS}">Reboot</button>'
-        '</footer>'
-    )
-
-
 def render_status_html(info):
-    """Render the status info dict (same shape as /status JSON) as an HTML page."""
+    """Render the page shell with the status info (same shape as /status JSON)
+    embedded for first paint. All further updates are client-side via /status."""
+    # Escape '<' so the embedded JSON can never terminate the <script> early or
+    # inject markup (json.dumps does not escape '<' by default).
+    initial = json.dumps(info).replace("<", "\\u003c")
     return (
-        '<!DOCTYPE html>'
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<meta http-equiv="refresh" content="{_REFRESH_SECONDS}">'
-        '<title>I75 Flight Display</title>'
-        f'<link rel="icon" href="{_FAVICON}">'
-        f'<link rel="stylesheet" href="{_PICO_CSS}">'
-        f'<style>{_STYLES}</style>'
-        '</head><body><main class="container">'
-        '<header>'
-        f'<h1>Interstate 75 Flight Display'
-        f'<span class="refresh-badge" title="page auto-refreshes">&#x21bb; {_REFRESH_SECONDS}s</span>'
-        '</h1>'
-        '</header>'
-        + _render_flight(info["current_flight"], info.get("config", {}))
-        + _render_device(info)
-        + _render_footer()
-        + '</main></body></html>'
+        _HEAD
+        + '<script>window.__INITIAL__=' + initial
+        + ';window.__REFRESH_MS__=' + str(_REFRESH_SECONDS * 1000) + ';</script>'
+        + '<script>' + _SCRIPT + '</script>'
+        + '</body></html>'
     )
