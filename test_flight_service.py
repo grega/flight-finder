@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from flight_service import app, calculate_bounds, API_KEY
+from flight_service import app, calculate_bounds, API_KEY, serialize_flight, airport_name
 
 @pytest.fixture(autouse=True)
 def disable_api_key(monkeypatch):
@@ -160,6 +160,40 @@ def test_closest_flight_max_altitude_filter(mock_api, client):
     data = response.get_json()
     assert response.status_code == 200
     assert data["found"] is False
+
+
+def test_airport_name_lookup():
+    """IATA codes resolve to a full name; unknown/empty codes return None."""
+    assert "Heathrow" in airport_name("LHR")
+    assert airport_name("ZZ9") is None
+    assert airport_name(None) is None
+
+
+def test_serialize_flight_fills_airport_names_from_iata():
+    """When FR24 omits airport names, fill them from the offline IATA lookup."""
+    flight = DummyFlight()  # has LHR/CDG iata, but no *_airport_name attributes
+    data = serialize_flight(flight)
+    assert "Heathrow" in data["route"]["origin_name"]
+    assert data["route"]["destination_name"]  # CDG resolved to some name
+
+
+def test_serialize_flight_prefers_fr24_airport_names():
+    """FR24's own airport names take precedence over the IATA lookup."""
+    flight = DummyFlight()
+    flight.set_flight_details({"origin": "Custom Origin", "destination": "Custom Dest"})
+    data = serialize_flight(flight)
+    assert data["route"]["origin_name"] == "Custom Origin"
+    assert data["route"]["destination_name"] == "Custom Dest"
+
+
+def test_serialize_flight_unknown_iata_omits_name():
+    """An unresolvable IATA code leaves the name out rather than guessing."""
+    flight = DummyFlight()
+    flight.origin_airport_iata = None
+    flight.destination_airport_iata = None
+    data = serialize_flight(flight)
+    assert "origin_name" not in data["route"]
+    assert "destination_name" not in data["route"]
 
 
 @patch("flight_service.fr_api")

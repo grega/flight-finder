@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from FlightRadar24 import FlightRadar24API
 from math import radians, cos
+import airportsdata
 import os
 
 load_dotenv()
@@ -14,6 +15,15 @@ app = Flask(__name__)
 fr_api = FlightRadar24API()
 
 API_KEY = os.getenv("SERVICE_API_KEY", None)
+
+# Offline IATA -> airport metadata, loaded once at startup. Used to fill in airport names when FlightRadar24 returns only the IATA code (its free endpoint intermittently omits the full route detail)
+_AIRPORTS = airportsdata.load("IATA")
+
+
+def airport_name(iata):
+    """Full airport name for an IATA code, or None if unknown."""
+    record = _AIRPORTS.get(iata) if iata else None
+    return record["name"] if record else None
 
 
 def calculate_bounds(lat: float, lon: float, radius_km: float) -> str:
@@ -69,10 +79,15 @@ def serialize_flight(flight):
     # add detailed info if available
     if hasattr(flight, 'aircraft_model'):
         flight_data["aircraft"]["model"] = flight.aircraft_model
-    if hasattr(flight, 'origin_airport_name'):
-        flight_data["route"]["origin_name"] = flight.origin_airport_name
-    if hasattr(flight, 'destination_airport_name'):
-        flight_data["route"]["destination_name"] = flight.destination_airport_name
+
+    # Prefer FlightRadar24's airport names, but fall back to the offline IATA
+    # lookup when they're absent so partial FR24 responses still carry names.
+    origin_name = getattr(flight, 'origin_airport_name', None) or airport_name(flight.origin_airport_iata)
+    if origin_name:
+        flight_data["route"]["origin_name"] = origin_name
+    destination_name = getattr(flight, 'destination_airport_name', None) or airport_name(flight.destination_airport_iata)
+    if destination_name:
+        flight_data["route"]["destination_name"] = destination_name
 
     return flight_data
 
