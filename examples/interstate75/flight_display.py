@@ -269,7 +269,10 @@ def network_connect(ssid, password):
         return True
 
 def is_quiet_period():
-    """Check if current time is within the quiet period, using UTC_OFFSET"""
+    """Check if current time is within the quiet period, using UTC_OFFSET. Returns False outright when quiet time is disabled.
+    """
+    if not globals().get("QUIET_ENABLED", True):
+        return False
     try:
         current_time = time.localtime()
         utc_hour = current_time[3]

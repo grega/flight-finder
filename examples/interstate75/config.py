@@ -10,7 +10,7 @@ API_URL                 = "https://wherever-the-flight-finder-service-is-deploye
 BRIGHT_MODE             = False # Set to True for brighter (higher intensity) colours
 DISTANCE_UNIT           = "km" # km or mi, for display purposes only
 SHOW_ALTITUDE           = False # Set to True to cycle between distance and altitude on line 2
-ALTITUDE_UNIT           = "ft" # ft or m, for display purposes only (FR24 reports altitude in feet)
+ALTITUDE_UNIT           = "m" # ft or m, for display purposes only (FR24 reports altitude in feet)
 VALUE_SWAP_INTERVAL     = 5 # seconds between distance/altitude swaps when SHOW_ALTITUDE is True
 SCROLL_ENABLED          = True # Set to False to disable marquee scrolling; long text on line 2 or line 3 will simply be cut off at the right edge
 SCROLL_PAUSE_MS         = 2500 # ms to pause at start/end of each scroll cycle (line 2 and line 3)
@@ -23,6 +23,7 @@ REFRESH_INTERVAL        = 60 # seconds, best to keep this at 30s or more
 USER_AGENT_ID           = "Flight Tracker 1" # ID used as part of user-agent header in requests to API, eg. "I75 Matrix Display {USER_AGENT_ID}" (useful for identifying the devices making requests)
 
 # "quiet time" config (ie. show nothing on the display between these times)
+QUIET_ENABLED      = True # set to False to disable quiet time entirely (display always on)
 UTC_OFFSET         = 0 # offset of your timezone from UTC (eg. for UTC+2 set to 2, for UTC-5 set to -5)
 QUIET_START_HOUR   = 22
 QUIET_START_MINUTE = 0
