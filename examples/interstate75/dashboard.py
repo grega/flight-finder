@@ -21,11 +21,10 @@ _FAVICON = (
 )
 
 # Palette mirroring the I75 display colors
-# The hue mapping matches what the display uses:
-#   YELLOW  -> route / IATA codes (display line 1)
-#   CYAN    -> flight number (display line 2, first segment)
-#   BLUE    -> distance (display line 2, distance segment)
-#   MAGENTA -> aircraft model (display line 3)
+#   YELLOW    -> route / IATA codes (display line 1)
+#   CYAN      -> flight number (display line 2, first segment)
+#   BLUE      -> distance (display line 2, distance segment)
+#   MAGENTA   -> aircraft model (display line 3)
 #   GREEN/RED -> last-fetch OK/FAIL
 _STYLES = """
 :root {
