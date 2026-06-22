@@ -103,6 +103,24 @@ _STYLES = """
 .hero-flight-no strong { color: var(--i75-cyan); font-size: 1.15rem; letter-spacing: 0.04em; }
 .fetch-ok   { color: var(--i75-green); }
 .fetch-fail { color: var(--i75-red); }
+.flight-row { display: flex; gap: 0.75rem; align-items: stretch; }
+.flight-main { flex: 1 1 auto; min-width: 0; }
+.refresh-bar {
+  position: relative;
+  flex: 0 0 8px;
+  align-self: stretch;
+  min-height: 64px;
+  background: var(--pico-card-sectioning-background-color);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.refresh-bar-fill {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--i75-green);
+  transform-origin: bottom center;
+  transform: scaleY(0); /* set live by tickBar() */
+}
 .dashboard-footer { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; font-size: 0.85rem; }
 .dashboard-footer a { white-space: nowrap; }
 .dashboard-footer button { padding: 0.2rem 0.7rem; font-size: 0.8rem; margin: 0; width: auto; }
@@ -291,8 +309,37 @@ _SCRIPT = """
   }
 
   function render(info){
-    document.getElementById('flight-card').innerHTML = renderFlight(info.current_flight, info.config || {});
+    document.getElementById('flight-content').innerHTML = renderFlight(info.current_flight, info.config || {});
     document.getElementById('device-card').innerHTML = renderDevice(info);
+    syncCountdown(info);
+  }
+
+  // Mirror the display's green countdown bar: a vertical bar beside the flight
+  // card that depletes over the fetch interval. Driven by /status
+  // (last_fetch_age_s + refresh_interval_s) but animated locally so it ticks
+  // smoothly between the 5s polls.
+  var fetchAtMs = null, intervalS = null;
+  function syncCountdown(info){
+    var age = info.last_fetch_age_s;
+    var iv = info.config && info.config.refresh_interval_s;
+    if(age == null || !iv){ fetchAtMs = null; intervalS = null; return; }
+    intervalS = iv;
+    var at = Date.now() - age * 1000;
+    // Only resync on a real change (a new fetch resets age, or genuine drift);
+    // ignore the sub-second jitter from age being whole seconds so the bar
+    // doesn't twitch on every poll.
+    if(fetchAtMs == null || Math.abs(at - fetchAtMs) > 2000) fetchAtMs = at;
+  }
+  function tickBar(){
+    var fill = document.getElementById('refresh-bar-fill');
+    var bar = document.getElementById('refresh-bar');
+    if(!fill) return;
+    if(fetchAtMs == null || !intervalS){ fill.style.transform = 'scaleY(0)'; return; }
+    var remaining = intervalS - (Date.now() - fetchAtMs) / 1000;
+    var frac = remaining / intervalS;
+    if(frac < 0) frac = 0; else if(frac > 1) frac = 1;
+    fill.style.transform = 'scaleY(' + frac + ')';
+    if(bar) bar.title = 'Next refresh in ' + Math.max(0, Math.ceil(remaining)) + 's';
   }
 
   var badge;
@@ -321,6 +368,8 @@ _SCRIPT = """
   // First paint from data embedded in the page (no round-trip), then poll.
   if(window.__INITIAL__) render(window.__INITIAL__);
   setInterval(refresh, REFRESH_MS);
+  tickBar();
+  setInterval(tickBar, 250);
 })();
 """
 
@@ -340,7 +389,14 @@ _HEAD = (
     '</h1>'
     '<a href="/config-editor" role="button" class="edit-config">&#9881; Edit config</a>'
     '</header>'
-    '<article id="flight-card"></article>'
+    '<article id="flight-card">'
+    '<div class="flight-row">'
+    '<div id="flight-content" class="flight-main"></div>'
+    '<div class="refresh-bar" id="refresh-bar" title="Time until next flight data refresh">'
+    '<div class="refresh-bar-fill" id="refresh-bar-fill"></div>'
+    '</div>'
+    '</div>'
+    '</article>'
     '<article id="device-card"></article>'
     '<footer class="dashboard-footer">'
     '<a href="/status">/status (JSON)</a>'
