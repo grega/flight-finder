@@ -248,8 +248,7 @@ _SCRIPT = """
 
   function renderFlight(f, config){
     if(!f){
-      return '<header>Current flight</header>'+
-        '<p style="text-align:center;margin:1rem 0;color:var(--pico-muted-color)">'+
+      return '<p style="text-align:center;margin:1rem 0;color:var(--pico-muted-color)">'+
         '<em>No flight currently displayed.</em></p>';
     }
     var distUnit = (config && config.distance_unit) || 'km';
@@ -274,8 +273,7 @@ _SCRIPT = """
     var originName = resolveName(f.origin_iata, f.origin_name);
     var destName = resolveName(f.destination_iata, f.destination_name);
 
-    return '<header>Current flight</header>'+
-      '<p class="hero-flight-no"><strong>'+esc(f.flight_number)+'</strong></p>'+
+    return '<p class="hero-flight-no"><strong>'+esc(f.flight_number)+'</strong></p>'+
       '<div class="hero-route">'+
       '<div class="leg">'+
       '<span class="iata">'+iataLink(f.origin_iata)+'</span>'+
@@ -390,6 +388,7 @@ _HEAD = (
     '<a href="/config-editor" role="button" class="edit-config">&#9881; Edit config</a>'
     '</header>'
     '<article id="flight-card">'
+    '<header>Current flight</header>'
     '<div class="flight-row">'
     '<div id="flight-content" class="flight-main"></div>'
     '<div class="refresh-bar" id="refresh-bar" title="Time until next flight data refresh">'
