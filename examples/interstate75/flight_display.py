@@ -406,6 +406,24 @@ def format_altitude_ft(altitude_ft):
         return f"{altitude_ft}ft"
     return f"{round(altitude_ft / 1000)}k ft"
     
+# Resolved airport names cached by IATA code. The flight API intermittently
+# returns a flight with only the IATA code and no airport name; remembering the
+# names we have seen lets /status (and the dashboard, including its first paint
+# after a page refresh) keep showing them on the polls where the API omits them.
+# Bounded so it can't grow without limit at a busy location.
+_airport_names = {}
+_AIRPORT_NAME_CACHE_MAX = 100
+
+def _resolve_airport_name(iata, name):
+    if not iata or iata == "N/A":
+        return name
+    if name:
+        if iata not in _airport_names and len(_airport_names) >= _AIRPORT_NAME_CACHE_MAX:
+            _airport_names.popitem() # evict an arbitrary entry to make room
+        _airport_names[iata] = name
+        return name
+    return _airport_names.get(iata)
+
 def display_flight_data(data):
     """Display flight data on the screen"""
     global _current_flight_summary
@@ -451,9 +469,9 @@ def display_flight_data(data):
         "aircraft_model": aircraft_model,
         "distance_km": distance_km,
         "origin_iata": origin,
-        "origin_name": route.get("origin_name"),
+        "origin_name": _resolve_airport_name(origin, route.get("origin_name")),
         "destination_iata": destination,
-        "destination_name": route.get("destination_name"),
+        "destination_name": _resolve_airport_name(destination, route.get("destination_name")),
         # Extra fields exposed to /status (JSON) and rendered by the dashboard.
         # Display-side rendering ignores them; they exist purely for the web UI.
         "altitude_ft": position.get("altitude"),
