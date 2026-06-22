@@ -4,7 +4,7 @@ Web service for finding closest flights using FlightRadarAPI
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
-from FlightRadar24 import FlightRadar24API
+from FlightRadarAPI import FlightRadar24API
 from math import radians, cos
 import airportsdata
 import os

@@ -1,7 +1,5 @@
 Flask==3.1.2
-FlightRadarAPI==1.4.2
-# FlightRadarAPI 1.4.2 imports bs4 (api.py) without declaring it in package metadata, added explicitly until upstream is fixed
-beautifulsoup4
+FlightRadarAPI==1.5.1
 airportsdata==20260315
 gunicorn==23.0.0
 pytest==9.0.0
