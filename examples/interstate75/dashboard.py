@@ -121,6 +121,9 @@ _STYLES = """
   transform-origin: bottom center;
   transform: scaleY(0); /* set live by tickBar() */
 }
+table.history { font-size: 0.85rem; margin: 0; }
+table.history th, table.history td { padding: 0.3rem 0.5rem; }
+table.history .route { white-space: nowrap; }
 .dashboard-footer { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; font-size: 0.85rem; }
 .dashboard-footer a { white-space: nowrap; }
 .dashboard-footer button { padding: 0.2rem 0.7rem; font-size: 0.8rem; margin: 0; width: auto; }
@@ -306,10 +309,53 @@ _SCRIPT = """
       '</table>';
   }
 
+  var lastConfig = {}, lastFlightNo = false;
   function render(info){
     document.getElementById('flight-content').innerHTML = renderFlight(info.current_flight, info.config || {});
     document.getElementById('device-card').innerHTML = renderDevice(info);
     syncCountdown(info);
+    lastConfig = info.config || {};
+    // Refresh the history table when the current flight changes (and on first render).
+    var fn = info.current_flight && info.current_flight.flight_number;
+    if(fn !== lastFlightNo){ lastFlightNo = fn; refreshHistory(); }
+  }
+
+  function fmtAgo(s){
+    if(s == null) return '';
+    if(s < 60) return s + 's ago';
+    if(s < 3600) return Math.floor(s / 60) + 'm ago';
+    return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm ago';
+  }
+
+  function renderHistory(items){
+    var card = document.getElementById('history-card');
+    if(!card) return;
+    if(!items || !items.length){
+      card.innerHTML = '<header>Recent flights</header>'+
+        '<p style="color:var(--pico-muted-color)"><em>No flights recorded yet.</em></p>';
+      return;
+    }
+    var unit = lastConfig.distance_unit || 'km';
+    var rows = items.map(function(f){
+      return '<tr>'+
+        '<td>'+fmtAgo(f.age_s)+'</td>'+
+        '<td>'+esc(f.flight_number)+'</td>'+
+        '<td class="route">'+esc(f.origin_iata)+' &rarr; '+esc(f.destination_iata)+'</td>'+
+        '<td>'+esc(f.aircraft_model)+'</td>'+
+        '<td>'+fmtDistance(f.distance_km, unit)+'</td>'+
+        '</tr>';
+    }).join('');
+    card.innerHTML = '<header>Recent flights</header>'+
+      '<table class="history"><thead><tr>'+
+      '<th>Seen</th><th>Flight</th><th>Route</th><th>Aircraft</th><th>Dist</th>'+
+      '</tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+
+  function refreshHistory(){
+    fetch('/history', {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+      .then(function(d){ renderHistory(d.flights || []); })
+      .catch(function(){ /* keep last table; the live badge already shows offline */ });
   }
 
   // Mirror the display's green countdown bar: a vertical bar beside the flight
@@ -368,6 +414,8 @@ _SCRIPT = """
   setInterval(refresh, REFRESH_MS);
   tickBar();
   setInterval(tickBar, 250);
+  // Refresh history periodically too, so the "seen N ago" ages stay current even while the same flight remains closest
+  setInterval(refreshHistory, 30000);
 })();
 """
 
@@ -397,6 +445,7 @@ _HEAD = (
     '</div>'
     '</article>'
     '<article id="device-card"></article>'
+    '<article id="history-card"></article>'
     '<footer class="dashboard-footer">'
     '<a href="/status">/status (JSON)</a>'
     '<a href="/logs">/logs</a>'

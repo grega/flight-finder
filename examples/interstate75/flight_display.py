@@ -33,8 +33,7 @@ ORANGE  = display.create_pen(*((255, 128, 0) if BRIGHT_MODE else (128, 64, 0)))
 # font
 display.set_font("bitmap8")
 
-# px between adjacent segments on a multi-segment scrolling line (eg. between
-# the flight number and the distance/altitude value on line 2)
+# px between adjacent segments on a multi-segment scrolling line (eg. between the flight number and the distance/altitude value on line 2)
 SEGMENT_GAP = 4
 
 def clear_display():
@@ -43,14 +42,10 @@ def clear_display():
     display.clear()
     i75.update()
 
-# Set by /reboot; the main loop reboots after the response has flushed so the
-# client sees a clean 200 rather than a dropped connection.
+# Set by /reboot; the main loop reboots after the response has flushed so the client sees a clean 200 rather than a dropped connection
 _reboot_requested = False
 
-# Restrict /upload targets to safe Python module filenames: alphanumeric +
-# underscores, .py extension only. Prevents path traversal (no "/" or ".."),
-# hidden files, and writes outside the current working directory.
-# Hand-rolled char check: Pimoroni's MicroPython build omits str.isalnum().
+# Restrict /upload targets to safe Python module filenames: alphanumeric + underscores, .py extension only
 def _is_safe_upload_target(name):
     if not name or not name.endswith(".py"):
         return False
@@ -62,26 +57,23 @@ def _is_safe_upload_target(name):
             return False
     return True
 
-# Tick value captured at boot for uptime reporting via /status. Subject to the
-# ~24-day ticks_ms wraparound; good enough for "has it just rebooted" checks.
+# Tick value captured at boot for uptime reporting via /status
 _boot_ticks_ms = time.ticks_ms()
 
-# State tracked for /status. Updated by fetch_flight_data and display_flight_data.
+# State tracked for /status. Updated by fetch_flight_data and display_flight_data
 _last_fetch_ticks_ms = None
 _last_fetch_ok = None
 _last_fetch_error = None
 _current_flight_summary = None
 
-# In-memory circular log buffer fed by os.dupterm(). Size is RAM-only and never
-# written to flash; bumping it costs RAM but not storage.
+# Recently-seen flights for /history (newest last)
+_FLIGHT_HISTORY_MAX = 15
+_flight_history = []
+
 _LOG_BUFFER_BYTES = 4096
 
 class _LogBuffer:
-    """Fixed-size in-memory ring buffer for /logs.
-
-    Fed by a print() monkey-patch (see _install_log_capture). Lives entirely in
-    RAM - never persisted - so imposes zero storage cost regardless of uptime.
-    """
+    """Fixed-size in-memory ring buffer for /logs. """
     def __init__(self, size):
         self.buf = bytearray()
         self.size = size
@@ -95,12 +87,7 @@ class _LogBuffer:
 _log_buffer = _LogBuffer(_LOG_BUFFER_BYTES)
 
 def _install_log_capture():
-    """Replace builtins.print so every print() also lands in _log_buffer.
-
-    Avoids os.dupterm, which depends on the firmware's MICROPY_PY_OS_DUPTERM
-    slot count and the io.IOBase stream protocol - both of which proved unreliable
-    on the Pimoroni i75 build (writes never reached our stream).
-    """
+    """Replace builtins.print so every print() also lands in _log_buffer. """
     original_print = builtins.print
     def _captured_print(*args, **kwargs):
         sep = kwargs.get("sep", " ")
@@ -180,9 +167,22 @@ def _collect_status():
 def _handle_status(body, query):
     return (200, "application/json", json.dumps(_collect_status()))
 
+def _handle_history(body, query):
+    # Recently-seen flights, newest first
+    now = time.ticks_ms()
+    items = []
+    for e in reversed(_flight_history):
+        items.append({
+            "flight_number": e["flight_number"],
+            "origin_iata": e["origin_iata"],
+            "destination_iata": e["destination_iata"],
+            "aircraft_model": e["aircraft_model"],
+            "distance_km": e["distance_km"],
+            "age_s": time.ticks_diff(now, e["seen_ticks_ms"]) // 1000,
+        })
+    return (200, "application/json", json.dumps({"flights": items}))
+
 def _handle_logs(body, query):
-    # Serve the entire ring buffer as plain text. Buffer is bounded so the
-    # response size is bounded; never touches flash.
     return (200, "text/plain; charset=utf-8", bytes(_log_buffer.buf))
 
 def _handle_index(body, query):
@@ -191,6 +191,7 @@ def _handle_index(body, query):
 def register_routes():
     webserver.route("GET",  "/",              _handle_index)
     webserver.route("GET",  "/status",        _handle_status)
+    webserver.route("GET",  "/history",       _handle_history)
     webserver.route("GET",  "/logs",          _handle_logs)
     webserver.route("GET",  "/config",        _handle_get_config)
     webserver.route("GET",  "/config-editor", _handle_config_editor)
@@ -201,9 +202,6 @@ def poll_webserver():
     """Service one HTTP request if pending, then reboot if /reboot was hit."""
     webserver.poll()
     if _reboot_requested:
-        # Give the FIN packet time to reach the client. 200ms was too short on
-        # slower/wifi networks - the chip would reset before the close had
-        # propagated, and the client saw an RST instead of a clean FIN.
         time.sleep_ms(500)
         machine.reset()
 
@@ -211,10 +209,6 @@ def network_connect(ssid, password):
     """Connect to WiFi network"""
     wlan = network.WLAN(network.STA_IF)
 
-    # Soft reboot fast path: if the chip is still associated from the previous
-    # run, just reuse the connection. Tearing it down only to re-establish it
-    # is the root cause of the "first attempt fails" pattern - the CYW43 hates
-    # being asked to reconnect to an AP it's still associated with.
     try:
         if wlan.isconnected() and wlan.status() == network.STAT_GOT_IP:
             ip = wlan.ifconfig()[0]
@@ -230,9 +224,6 @@ def network_connect(ssid, password):
     except Exception:
         pass
 
-    # Cold boot path: chip needs full initialisation. The 2s delay after
-    # active(True) is essential - CYW43 returns from active(True) before the
-    # radio is actually ready, so an immediate connect() will time out.
     wlan.active(True)
     time.sleep(2)
     wlan.config(pm=0xa11140) # turn WiFi power saving off for some slow APs
@@ -406,11 +397,7 @@ def format_altitude_ft(altitude_ft):
         return f"{altitude_ft}ft"
     return f"{round(altitude_ft / 1000)}k ft"
     
-# Resolved airport names cached by IATA code. The flight API intermittently
-# returns a flight with only the IATA code and no airport name; remembering the
-# names we have seen lets /status (and the dashboard, including its first paint
-# after a page refresh) keep showing them on the polls where the API omits them.
-# Bounded so it can't grow without limit at a busy location.
+# Resolved airport names cached by IATA code, since the FR API sometimes returns a flight with an IATA code but no airport name
 _airport_names = {}
 _AIRPORT_NAME_CACHE_MAX = 100
 
@@ -419,10 +406,26 @@ def _resolve_airport_name(iata, name):
         return name
     if name:
         if iata not in _airport_names and len(_airport_names) >= _AIRPORT_NAME_CACHE_MAX:
-            _airport_names.popitem() # evict an arbitrary entry to make room
+            _airport_names.popitem()
         _airport_names[iata] = name
         return name
     return _airport_names.get(iata)
+
+def _record_flight_history(flight_number, origin_iata, destination_iata, aircraft_model, distance_km):
+    """Append a flight to the /history ring, skipping consecutive duplicates so a
+    flight that stays closest across several fetches is logged once."""
+    if _flight_history and _flight_history[-1]["flight_number"] == flight_number:
+        return
+    _flight_history.append({
+        "flight_number": flight_number,
+        "origin_iata": origin_iata,
+        "destination_iata": destination_iata,
+        "aircraft_model": aircraft_model,
+        "distance_km": distance_km,
+        "seen_ticks_ms": time.ticks_ms(),
+    })
+    while len(_flight_history) > _FLIGHT_HISTORY_MAX:
+        _flight_history.pop(0)
 
 def display_flight_data(data):
     """Display flight data on the screen"""
@@ -472,8 +475,8 @@ def display_flight_data(data):
         "origin_name": _resolve_airport_name(origin, route.get("origin_name")),
         "destination_iata": destination,
         "destination_name": _resolve_airport_name(destination, route.get("destination_name")),
-        # Extra fields exposed to /status (JSON) and rendered by the dashboard.
-        # Display-side rendering ignores them; they exist purely for the web UI.
+        # Extra fields exposed to /status (JSON) and rendered by the dashboard
+        # Display-side rendering ignores them; they exist purely for the web UI
         "altitude_ft": position.get("altitude"),
         "vertical_speed": position.get("vertical_speed"),
         "ground_speed": position.get("ground_speed"),
@@ -481,7 +484,9 @@ def display_flight_data(data):
         "registration": aircraft.get("registration"),
         "callsign": flight.get("callsign"),
     }
-    
+
+    _record_flight_history(flight_number, origin, destination, aircraft_model, distance_km)
+
     # display the flight info...
     # line 1: origin > destination
     display.set_pen(YELLOW)
@@ -499,8 +504,7 @@ def display_flight_data(data):
     altitude_width = display.measure_text(altitude_text, 1)
     model_pixel_width = display.measure_text(aircraft_model, 1)
 
-    # line 2: flight number + distance (update_dynamic_display swaps to altitude when SHOW_ALTITUDE,
-    # and scrolls if the combined width overflows the display)
+    # line 2: flight number + distance (update_dynamic_display swaps to altitude when SHOW_ALTITUDE, and scrolls if needed
     draw_scrolling_line(13, [(flight_number, CYAN), (distance_text, BLUE)], 2)
 
     # line 3: aircraft model (scrolled by update_dynamic_display when it overflows the display)
@@ -593,9 +597,7 @@ def update_dynamic_display(elapsed_ms, cycle_info, state):
     if not cycle_info:
         return
 
-    # Pick the line 2 value, and reset its scroll clock when the value swaps so
-    # the new content starts from the left with a pause (rather than jumping into
-    # an arbitrary scroll position carried over from the previous value's width).
+    # Pick the line 2 value, and reset its scroll position when the value swaps
     if SHOW_ALTITUDE:
         show_altitude = (int(elapsed_s) // VALUE_SWAP_INTERVAL) % 2 == 1
     else:
@@ -626,8 +628,6 @@ def update_dynamic_display(elapsed_ms, cycle_info, state):
 
 def main():
     """Main function to connect to WiFi, fetch data, and display it"""
-    # Capture print() output into the in-memory ring buffer so /logs can serve
-    # it. Install first so we capture the boot sequence too.
     _install_log_capture()
     print("BOOT: main() entered")
     try:
@@ -659,9 +659,8 @@ def main():
         if not connected:
             time.sleep(5)
 
-    # Start the webserver BEFORE anything that might block (eg. NTP DNS resolution).
-    # This guarantees `./push.py` can always reach us to push fixes, even if the
-    # rest of startup hangs.
+    # Start the webserver BEFORE anything that might block (eg. NTP DNS resolution)
+    # This guarantees `./push.py` can always reach us to push fixes, even if the rest of startup hangs
     print("BOOT: registering routes")
     register_routes()
     print("BOOT: starting webserver")
