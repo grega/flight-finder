@@ -20,22 +20,21 @@ _PAGE = r"""<!DOCTYPE html>
 <link rel="icon" href="__FAVICON__">
 <link rel="stylesheet" href="__PICO__">
 <style>
-h2 { margin: 0 0 0.5rem; color: var(--pico-muted-color); }
+h2 { margin: 0 0 0.5rem; color: var(--pico-muted-color); font-size: 1.25rem; }
 .field { margin-bottom: 0.7rem; }
-.field label { font-weight: 600; }
+.field label { font-size: 0.875rem; }
 .field small { display: block; color: var(--pico-muted-color); }
+.field input[type="text"], .field input[type="number"], .field select { font-size: 0.875rem; }
 .utc-hint { font-variant-numeric: tabular-nums; }
 .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1.2rem; }
 .actions button { width: auto; margin: 0; }
-#status { min-height: 1.3em; margin-top: 0.6rem; }
-#status.err { color: #c0392b; }
-#status.ok { color: #2e7d32; }
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem 1.5rem; flex-wrap: wrap; }
 details pre { white-space: pre-wrap; font-size: 0.72rem; max-height: 14rem; overflow: auto; }
 </style>
 </head><body><main class="container">
-<header>
+<header class="page-header">
 <h1>Config editor</h1>
-<p><a href="/">&larr; Back to dashboard</a></p>
+<a href="/">&larr; Back to dashboard</a>
 </header>
 <article>
 <form id="cfg"></form>
@@ -236,7 +235,7 @@ details pre { white-space: pre-wrap; font-size: 0.72rem; max-height: 14rem; over
     setStatus("Loading…");
     fetch("/config", {cache:"no-store"})
       .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
-      .then(function(t){ originalText = t; hydrate(t); setStatus("Loaded.", "ok"); })
+      .then(function(t){ originalText = t; hydrate(t); setStatus(""); })
       .catch(function(e){ setStatus("Failed to load config: " + e.message, "err"); });
   }
 

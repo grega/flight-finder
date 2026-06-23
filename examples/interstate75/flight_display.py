@@ -161,6 +161,8 @@ def _collect_status():
             "distance_unit": DISTANCE_UNIT,
             "altitude_unit": ALTITUDE_UNIT,
             "refresh_interval_s": REFRESH_INTERVAL,
+            "home_lat": LATITUDE,
+            "home_lon": LONGITUDE,
         },
     }
 
@@ -178,6 +180,7 @@ def _handle_history(body, query):
             "destination_iata": e["destination_iata"],
             "aircraft_model": e["aircraft_model"],
             "distance_km": e["distance_km"],
+            "registration": e["registration"],
             "age_s": time.ticks_diff(now, e["seen_ticks_ms"]) // 1000,
         })
     return (200, "application/json", json.dumps({"flights": items}))
@@ -411,7 +414,7 @@ def _resolve_airport_name(iata, name):
         return name
     return _airport_names.get(iata)
 
-def _record_flight_history(flight_number, origin_iata, destination_iata, aircraft_model, distance_km):
+def _record_flight_history(flight_number, origin_iata, destination_iata, aircraft_model, distance_km, registration):
     """Append a flight to the /history ring, skipping consecutive duplicates so a
     flight that stays closest across several fetches is logged once."""
     if _flight_history and _flight_history[-1]["flight_number"] == flight_number:
@@ -422,6 +425,7 @@ def _record_flight_history(flight_number, origin_iata, destination_iata, aircraf
         "destination_iata": destination_iata,
         "aircraft_model": aircraft_model,
         "distance_km": distance_km,
+        "registration": registration,
         "seen_ticks_ms": time.ticks_ms(),
     })
     while len(_flight_history) > _FLIGHT_HISTORY_MAX:
@@ -481,11 +485,13 @@ def display_flight_data(data):
         "vertical_speed": position.get("vertical_speed"),
         "ground_speed": position.get("ground_speed"),
         "heading": position.get("heading"),
+        "latitude": position.get("latitude"),
+        "longitude": position.get("longitude"),
         "registration": aircraft.get("registration"),
         "callsign": flight.get("callsign"),
     }
 
-    _record_flight_history(flight_number, origin, destination, aircraft_model, distance_km)
+    _record_flight_history(flight_number, origin, destination, aircraft_model, distance_km, aircraft.get("registration"))
 
     # display the flight info...
     # line 1: origin > destination
