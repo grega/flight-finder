@@ -78,9 +78,25 @@ summary[role="button"] { font-size: 0.875rem; }
 (function(){
   "use strict";
 
-  // Only simple literal settings are editable here. DISPLAY_TYPE/COLOR_ORDER are
-  // Python expressions and the imports are structural, so they're left to push.py.
+  // Most settings are simple literals; DISPLAY_TYPE/COLOR_ORDER are kept as raw
+  // Python expressions so panel wiring/options can also be edited here.
   var FIELDS = [
+    {section:"Panel"},
+    {key:"DISPLAY_TYPE", label:"Display type", type:"select_expr", options:[
+      "DISPLAY_INTERSTATE75_64X32",
+      "DISPLAY_INTERSTATE75_64X64",
+      "DISPLAY_INTERSTATE75_128X32",
+      "DISPLAY_INTERSTATE75_128X64",
+      "DISPLAY_INTERSTATE75_128X128"
+    ], help:"Panel constant from interstate75 (try a different mode if part of the display is cut off)."},
+    {key:"COLOR_ORDER", label:"Color order", type:"select_expr", options:[
+      "Interstate75.COLOR_ORDER_RGB",
+      "Interstate75.COLOR_ORDER_GRB",
+      "Interstate75.COLOR_ORDER_BGR",
+      "Interstate75.COLOR_ORDER_BRG",
+      "Interstate75.COLOR_ORDER_RBG",
+      "Interstate75.COLOR_ORDER_GBR"
+    ], help:"Try alternatives if colours look wrong on your panel."},
     {section:"Location"},
     {key:"LATITUDE",  label:"Latitude",  type:"number", step:"any", min:"-90", max:"90"},
     {key:"LONGITUDE", label:"Longitude", type:"number", step:"any", min:"-180", max:"180"},
@@ -139,7 +155,7 @@ summary[role="button"] { font-size: 0.875rem; }
         lab.appendChild(cb);
         lab.appendChild(document.createTextNode(" " + f.label));
         wrap.appendChild(lab);
-      } else if(f.type === "select"){
+      } else if(f.type === "select" || f.type === "select_expr"){
         wrap.appendChild(el("label", {"for":id}, f.label));
         var sel = el("select", {id:id});
         f.options.forEach(function(o){ sel.appendChild(el("option", {value:o}, o)); });
@@ -304,6 +320,11 @@ summary[role="button"] { font-size: 0.875rem; }
     return m ? m[2].trim() : null;
   }
 
+  function ensureSelectValue(sel, raw){
+    if(sel.querySelector('option[value="' + raw.replace(/"/g, '\\"') + '"]')) return;
+    sel.appendChild(el("option", {value:raw}, raw));
+  }
+
   function hydrate(text){
     FIELDS.forEach(function(f){
       if(!f.key) return;
@@ -318,6 +339,7 @@ summary[role="button"] { font-size: 0.875rem; }
       if(f.type === "bool") e.checked = (raw === "True");
       else if(f.type === "number") e.value = raw;
       else if(f.type === "number_or_none") e.value = (raw === "None" ? "" : raw);
+      else if(f.type === "select_expr") { ensureSelectValue(e, raw); e.value = raw; }
       else e.value = stripQuotes(raw); // string / select
     });
     document.getElementById("raw").textContent = text;
@@ -339,6 +361,7 @@ summary[role="button"] { font-size: 0.875rem; }
     if(f.type === "bool") return e.checked ? "True" : "False";
     if(f.type === "number") return e.value.trim();
     if(f.type === "number_or_none"){ var v = e.value.trim(); return v === "" ? "None" : v; }
+    if(f.type === "select_expr") return e.value.trim();
     return '"' + sanitizeStr(e.value) + '"'; // string / select
   }
 
@@ -348,6 +371,19 @@ summary[role="button"] { font-size: 0.875rem; }
       return text.replace(re, function(m, pre, val, tail){ return pre + literal + tail; });
     }
     return text.replace(/\s*$/, "") + "\n" + key + " = " + literal + "\n";
+  }
+
+  function ensureDisplayTypeImport(text){
+    var e = document.getElementById("f_DISPLAY_TYPE");
+    if(!e) return text;
+    var token = e.value.trim();
+    if(!/^DISPLAY_INTERSTATE75_[A-Z0-9_]+$/.test(token)) return text;
+    var re = /^from interstate75 import[^\n]*$/m;
+    var m = text.match(re);
+    if(!m) return text;
+    var line = m[0];
+    if(line.indexOf(token) !== -1) return text;
+    return text.replace(re, line + ", " + token);
   }
 
   function load(){
@@ -363,6 +399,7 @@ summary[role="button"] { font-size: 0.875rem; }
     if(!confirm("Save config to the device and reboot?")) return;
     var out = originalText;
     FIELDS.forEach(function(f){ if(f.key) out = setValue(out, f.key, literalFor(f)); });
+    out = ensureDisplayTypeImport(out);
     setStatus("Saving…");
     fetch("/upload?path=config.py", {method:"POST", body:out})
       .then(function(r){
