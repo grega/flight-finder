@@ -36,6 +36,53 @@ display.set_font("bitmap8")
 # px between adjacent segments on a multi-segment scrolling line (eg. between the flight number and the distance/altitude value on line 2)
 SEGMENT_GAP = 4
 
+_LOG_BUFFER_BYTES = 4096
+
+class _LogBuffer:
+    """Fixed-size in-memory ring buffer for /logs. """
+    def __init__(self, size):
+        self.buf = bytearray()
+        self.size = size
+
+    def write(self, data):
+        self.buf.extend(data)
+        overflow = len(self.buf) - self.size
+        if overflow > 0:
+            del self.buf[:overflow]
+
+_log_buffer = _LogBuffer(_LOG_BUFFER_BYTES)
+
+def _install_log_capture():
+    """Replace builtins.print so every print() also lands in _log_buffer. """
+    original_print = builtins.print
+    def _captured_print(*args, **kwargs):
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        try:
+            _log_buffer.write((sep.join(str(a) for a in args) + end).encode())
+        except Exception:
+            pass # never let log capture break a print
+        return original_print(*args, **kwargs)
+    builtins.print = _captured_print
+
+# Installed at import (not in main()) so the config validation warnings below reach /logs
+_install_log_capture()
+
+def _coerce_refresh_interval(raw_value):
+    """Return a safe refresh interval in seconds (minimum 30)."""
+    try:
+        value = int(raw_value)
+    except Exception:
+        print(f"Invalid REFRESH_INTERVAL {raw_value!r}; falling back to 60s")
+        return 60
+    if value < 30:
+        print(f"REFRESH_INTERVAL {value}s is below minimum 30s; clamping to 30s")
+        return 30
+    return value
+
+# Enforce minimum value
+REFRESH_INTERVAL = _coerce_refresh_interval(REFRESH_INTERVAL)
+
 def clear_display():
     """Clear the display / turn it off"""
     display.set_pen(BLACK)
@@ -69,35 +116,6 @@ _current_flight_summary = None
 # Recently-seen flights for /history (newest last)
 _FLIGHT_HISTORY_MAX = 15
 _flight_history = []
-
-_LOG_BUFFER_BYTES = 4096
-
-class _LogBuffer:
-    """Fixed-size in-memory ring buffer for /logs. """
-    def __init__(self, size):
-        self.buf = bytearray()
-        self.size = size
-
-    def write(self, data):
-        self.buf.extend(data)
-        overflow = len(self.buf) - self.size
-        if overflow > 0:
-            del self.buf[:overflow]
-
-_log_buffer = _LogBuffer(_LOG_BUFFER_BYTES)
-
-def _install_log_capture():
-    """Replace builtins.print so every print() also lands in _log_buffer. """
-    original_print = builtins.print
-    def _captured_print(*args, **kwargs):
-        sep = kwargs.get("sep", " ")
-        end = kwargs.get("end", "\n")
-        try:
-            _log_buffer.write((sep.join(str(a) for a in args) + end).encode())
-        except Exception:
-            pass # never let log capture break a print
-        return original_print(*args, **kwargs)
-    builtins.print = _captured_print
 
 def _handle_get_config(body, query):
     try:
@@ -634,7 +652,6 @@ def update_dynamic_display(elapsed_ms, cycle_info, state):
 
 def main():
     """Main function to connect to WiFi, fetch data, and display it"""
-    _install_log_capture()
     print("BOOT: main() entered")
     try:
         from secrets import WIFI_PASSWORD, WIFI_SSID, FLIGHT_FINDER_API_KEY
