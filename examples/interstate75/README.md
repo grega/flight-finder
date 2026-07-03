@@ -30,7 +30,7 @@ Once connected to the I75 device:
       WIFI_PASSWORD = ""
       FLIGHT_FINDER_API_KEY = ""
       ```
-    - **Option B - use the setup hotspot**: skip `secrets.py` entirely. On first boot the device starts an open WiFi hotspot named `FlightDisplay-XXXX` (shown on the LED matrix). Join it and open `http://192.168.7.47` - the setup page lets you pick a network (with scan), enter the password and API key, and it tests the credentials while the hotspot stays up, then shows the device's new LAN IP before rebooting. See [WiFi setup mode](#wifi-setup-mode) below.
+    - **Option B - use the setup hotspot**: skip `secrets.py` entirely. On first boot the device starts an open WiFi hotspot named `FlightDisplay-XXXX` (shown on the LED matrix). Join it and open `http://192.168.4.1` - the setup page lets you pick a network (with scan), enter the password and API key, and it tests the credentials while the hotspot stays up, then shows the device's new LAN IP before rebooting. See [WiFi setup mode](#wifi-setup-mode) below.
   - Run the `flight_display.py` script to start displaying flights
 
 ### WiFi setup mode
@@ -41,7 +41,7 @@ The device falls back to a provisioning hotspot ("setup mode") whenever it can't
 - **Connection failure**: 3 failed attempts to join the configured network (wrong password, network gone, router offline). In this case the device also **auto-retries the saved network every 60s** while in setup mode, so a transient router outage heals itself.
 - **Forced**: hold the **SW_A button while powering on**.
 
-In setup mode the matrix alternates between the hotspot name and `http://192.168.7.47`. The setup page (`/wifi`) tests submitted credentials while keeping the hotspot up - the CYW43 radio supports AP+STA concurrently - and reports the device's new LAN IP back to the page **before** you leave the hotspot, solving the "how do I find it now?" problem. Credentials are only persisted to `secrets.py` after a verified join, then the device reboots into normal operation (after 60s, or immediately via the reboot button).
+In setup mode the matrix alternates between the hotspot name and `http://192.168.4.1`. The setup page (`/wifi`) tests submitted credentials while keeping the hotspot up - the CYW43 radio supports AP+STA concurrently - and reports the device's new LAN IP back to the page **before** you leave the hotspot, solving the "how do I find it now?" problem. Credentials are only persisted to `secrets.py` after a verified join, then the device reboots into normal operation (after 60s, or immediately via the reboot button).
 
 Notes:
 - Your phone may warn "this network has no internet" when joining the hotspot - choose to stay connected.

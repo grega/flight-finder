@@ -2,7 +2,7 @@
 
 When the device has no WiFi credentials, can't connect, or is booted with SW_A
 held, flight_display.run_setup_mode() brings up an open access point named
-FlightDisplay-XXXX and serves this module's page at http://192.168.7.47/wifi.
+FlightDisplay-XXXX and serves this module's page at http://192.168.4.1/wifi.
 The CYW43 radio keeps the AP up while the STA interface tests the submitted
 credentials, so the page can poll /wifi/status and show the device's new LAN
 IP before the user leaves the hotspot. Credentials are persisted to secrets.py
@@ -29,13 +29,13 @@ except ImportError:
     from ubinascii import hexlify
 
 AP_SSID_PREFIX = "FlightDisplay-"
-AP_IP = "192.168.7.47"
+AP_IP = "192.168.4.1"        # this appears to be the default AP IP on the Pico
 AP_NETMASK = "255.255.255.0"
 STA_JOIN_TIMEOUT_S = 20
 AUTO_RETRY_INTERVAL_S = 60   # retry saved creds this often when reason == "connect-failed"
 REBOOT_AFTER_SAVE_S = 60
 FAILED_SCREEN_S = 5
-SECRETS_PATH = "secrets.py"  # tests may point this at a scratch path
+SECRETS_PATH = "secrets.py"
 
 _SECRET_KEYS = ("WIFI_SSID", "WIFI_PASSWORD", "FLIGHT_FINDER_API_KEY")
 

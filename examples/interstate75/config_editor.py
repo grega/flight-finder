@@ -88,7 +88,7 @@ summary[role="button"] { font-size: 0.875rem; }
       "DISPLAY_INTERSTATE75_128X32",
       "DISPLAY_INTERSTATE75_128X64",
       "DISPLAY_INTERSTATE75_128X128"
-    ], help:"Panel constant from interstate75 (try a different mode if part of the display is cut off)."},
+    ], help:"Panel size (try a different mode if part of the display is cut off, eg. 64X64 if your 64X32 display is not displaying the bottom half)."},
     {key:"COLOR_ORDER", label:"Color order", type:"select_expr", options:[
       "Interstate75.COLOR_ORDER_RGB",
       "Interstate75.COLOR_ORDER_GRB",
