@@ -132,6 +132,29 @@ def _handle_config_editor(body, query):
         return (500, "text/plain", "config_editor.py is not on the device")
     return (200, "text/html; charset=utf-8", config_editor.render())
 
+def _handle_wifi_page(body, query):
+    # /wifi handlers lazy-import wifi_setup for the same heap reason as above
+    import wifi_setup
+    return wifi_setup.handle_page(body, query)
+
+def _handle_wifi_scan(body, query):
+    import wifi_setup
+    return wifi_setup.handle_scan(body, query)
+
+def _handle_wifi_status(body, query):
+    import wifi_setup
+    return wifi_setup.handle_status(body, query)
+
+def _handle_wifi_save(body, query):
+    # In normal mode a successful save also reboots so the new creds take effect
+    # (in setup mode wifi_setup's own reboot countdown handles it instead)
+    global _reboot_requested
+    import wifi_setup
+    result = wifi_setup.handle_save(body, query)
+    if result[0] == 200 and not wifi_setup.in_setup_mode():
+        _reboot_requested = True
+    return result
+
 def _handle_upload(body, query):
     # query is the raw query string, eg. "path=main.py"
     target = None
@@ -216,6 +239,10 @@ def register_routes():
     webserver.route("GET",  "/logs",          _handle_logs)
     webserver.route("GET",  "/config",        _handle_get_config)
     webserver.route("GET",  "/config-editor", _handle_config_editor)
+    webserver.route("GET",  "/wifi",          _handle_wifi_page)
+    webserver.route("GET",  "/wifi/scan",     _handle_wifi_scan)
+    webserver.route("GET",  "/wifi/status",   _handle_wifi_status)
+    webserver.route("POST", "/wifi/save",     _handle_wifi_save)
     webserver.route("POST", "/upload",        _handle_upload)
     webserver.route("POST", "/reboot",        _handle_reboot)
 
@@ -286,7 +313,7 @@ def network_connect(ssid, password):
         display.text("Connected", 2, 2, WIDTH, 1)
         display.text(ip, 2, 13, WIDTH, 1)
         i75.update()
-        time.sleep(3)
+        time.sleep(5)
         return True
 
 def is_quiet_period():
@@ -650,37 +677,136 @@ def update_dynamic_display(elapsed_ms, cycle_info, state):
         state["line3_offset"] = new_line3_offset
         draw_scrolling_line(23, [(cycle_info["model_text"], MAGENTA)], new_line3_offset)
 
+_AP_ALTERNATE_MS = 4000 # ms per screen in the setup-idle two-screen rotation
+
+def _setup_screen_key(ws, now_ms):
+    """Identify the setup screen to show, so the loop only redraws on change."""
+    st = ws.state()
+    phase = st["phase"]
+    if phase == "joined":
+        remain = 0
+        if st["reboot_at_ms"] is not None:
+            remain = max(0, time.ticks_diff(st["reboot_at_ms"], now_ms) // 1000)
+        return ("joined", remain)
+    if phase == "joining":
+        return ("joining", st["auto"])
+    if phase == "failed":
+        return ("failed", st["error"])
+    return ("idle", (now_ms // _AP_ALTERNATE_MS) % 2)
+
+def _draw_setup_screen(ws, screen, ap_ip, ap_name):
+    st = ws.state()
+    kind = screen[0]
+    display.set_pen(BLACK)
+    display.clear()
+    if kind == "idle":
+        if screen[1] == 0:
+            if st["reason"] == "connect-failed":
+                display.set_pen(ORANGE)
+                display.text("WiFi down", 2, 2, WIDTH, 1)
+            else:
+                display.set_pen(WHITE)
+                display.text("WiFi setup", 2, 2, WIDTH, 1)
+            display.set_pen(CYAN)
+            display.text("Join:", 2, 13, WIDTH, 1)
+            display.text(ap_name, 2, 23, WIDTH, 1)
+        else:
+            display.set_pen(WHITE)
+            display.text("Then open", 2, 2, WIDTH, 1)
+            display.set_pen(CYAN)
+            display.text("http://", 2, 13, WIDTH, 1)
+            display.text(ap_ip, 2, 23, WIDTH, 1)
+    elif kind == "joining":
+        display.set_pen(YELLOW)
+        display.text("Trying" + (" (auto)" if st["auto"] else ""), 2, 2, WIDTH, 1)
+        display.text(st["target_ssid"] or "", 2, 13, WIDTH, 1)
+    elif kind == "joined":
+        display.set_pen(GREEN)
+        display.text("Saved! IP:", 2, 2, WIDTH, 1)
+        display.text(st["ip"] or "", 2, 13, WIDTH, 1)
+        display.text(f"reboot in {screen[1]}s", 2, 23, WIDTH, 1)
+    else: # failed
+        display.set_pen(RED)
+        display.text("Join failed", 2, 2, WIDTH, 1)
+        display.text(st["error"] or "", 2, 13, WIDTH, 1)
+    i75.update()
+
+def run_setup_mode(reason, saved_ssid, saved_password):
+    """AP-mode provisioning: serve /wifi on an open hotspot until working creds
+    are saved. Never returns - every exit path is a machine.reset()."""
+    import wifi_setup # lazy: normal boots never pay for its page string
+
+    print(f"SETUP: entering setup mode ({reason})")
+    wifi_setup.begin(reason, saved_ssid, saved_password)
+    ap_ip = wifi_setup.start_ap()
+    ap_name = wifi_setup.ap_ssid()
+    print(f"SETUP: join '{ap_name}' then open http://{ap_ip}/")
+
+    wifi_setup.register_routes(True)
+    webserver.route("GET", "/", wifi_setup.handle_page) # bare AP IP lands on the setup page
+    # /upload, /logs and /reboot stay available so push.py can still fix a device stuck in setup mode
+    webserver.route("POST", "/upload", _handle_upload)
+    webserver.route("GET",  "/logs",   _handle_logs)
+    webserver.route("POST", "/reboot", _handle_reboot)
+    try:
+        webserver.start()
+    except Exception as e:
+        print(f"SETUP: webserver failed to start: {e}")
+
+    last_screen = None
+    while True:
+        now = time.ticks_ms()
+        wifi_setup.tick(now)
+        screen = _setup_screen_key(wifi_setup, now)
+        if screen != last_screen:
+            _draw_setup_screen(wifi_setup, screen, ap_ip, ap_name)
+            last_screen = screen
+        poll_webserver()
+        time.sleep_ms(100)
+
 def main():
     """Main function to connect to WiFi, fetch data, and display it"""
     print("BOOT: main() entered")
+
     try:
-        from secrets import WIFI_PASSWORD, WIFI_SSID, FLIGHT_FINDER_API_KEY
-        if WIFI_SSID == "":
-            raise ValueError("WIFI_SSID in 'secrets.py' is empty")
-        if WIFI_PASSWORD == "":
-            raise ValueError("WIFI_PASSWORD in 'secrets.py' is empty")
-        if not FLIGHT_FINDER_API_KEY:
-            raise ValueError("FLIGHT_FINDER_API_KEY in 'secrets.py' is empty")
-    except ImportError:
-        display.set_pen(RED)
-        display.clear()
-        display.text("Missing", 2, 2, WIDTH, 1)
-        display.text("secrets.py", 2, 8, WIDTH, 1)
-        i75.update()
+        network.hostname("flightdisplay") # enables http://flightdisplay.local where mDNS works
+    except Exception:
+        pass # older firmware without hostname support
+
+    # SW_A held at power-on forces setup mode (eg. to move the device to a new network)
+    try:
+        force_setup = i75.switch_pressed(i75.SWITCH_A)
+    except Exception:
+        force_setup = False # boards/firmware without SW_A
+    if force_setup:
+        run_setup_mode("button", None, None)
         return
-    except ValueError as e:
-        display.set_pen(RED)
-        display.clear()
-        display.text(str(e)[:10], 2, 2, WIDTH, 1) # show first 10 chars of error
-        i75.update()
+
+    try:
+        import secrets as _secrets
+        WIFI_SSID = getattr(_secrets, "WIFI_SSID", "")
+        WIFI_PASSWORD = getattr(_secrets, "WIFI_PASSWORD", "")
+        FLIGHT_FINDER_API_KEY = getattr(_secrets, "FLIGHT_FINDER_API_KEY", "")
+    except ImportError:
+        WIFI_SSID, WIFI_PASSWORD, FLIGHT_FINDER_API_KEY = "", "", ""
+
+    if not WIFI_SSID:
+        # No usable secrets.py - provision over the setup hotspot instead of dead-ending.
+        # An empty WIFI_PASSWORD is allowed through (open networks).
+        run_setup_mode("no-creds", None, None)
         return
 
     print("BOOT: secrets loaded, connecting WiFi")
     connected = False
-    while not connected:
+    for attempt in range(3):
         connected = network_connect(WIFI_SSID, WIFI_PASSWORD)
-        if not connected:
-            time.sleep(5)
+        if connected:
+            break
+        print(f"WiFi attempt {attempt + 1}/3 failed")
+        time.sleep(5)
+    if not connected:
+        run_setup_mode("connect-failed", WIFI_SSID, WIFI_PASSWORD)
+        return
 
     # Start the webserver BEFORE anything that might block (eg. NTP DNS resolution)
     # This guarantees `./push.py` can always reach us to push fixes, even if the rest of startup hangs
@@ -691,6 +817,23 @@ def main():
         webserver.start()
     except Exception as e:
         print(f"Webserver failed to start: {e}") # non-fatal; display still works
+
+    if not FLIGHT_FINDER_API_KEY:
+        # WiFi works but there's no API key yet: park on /wifi until one is saved.
+        # A successful save sets the reboot flag, so poll_webserver() restarts us.
+        ip = network.WLAN(network.STA_IF).ifconfig()[0]
+        print(f"BOOT: no API key - set it via http://{ip}/wifi")
+        display.set_pen(BLACK)
+        display.clear()
+        display.set_pen(RED)
+        display.text("No API key", 2, 2, WIDTH, 1)
+        display.set_pen(WHITE)
+        display.text(ip, 2, 13, WIDTH, 1)
+        display.text("/wifi", 2, 23, WIDTH, 1)
+        i75.update()
+        while True:
+            poll_webserver()
+            time.sleep_ms(100)
 
     print("BOOT: attempting NTP sync")
     try:
@@ -749,4 +892,7 @@ def main():
                 poll_webserver()
                 time.sleep(1)
 
-main()
+# On the device this file runs as main.py (__main__); the guard keeps imports
+# (emulator, tests) from booting the display loop / setup mode
+if __name__ == "__main__":
+    main()

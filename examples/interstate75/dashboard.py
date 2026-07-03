@@ -174,6 +174,7 @@ table.history .route { white-space: nowrap; }
   padding: 0.4rem 0.8rem;
   font-size: 0.8rem;
 }
+.dash-header-links { display: flex; gap: 0.5rem; }
 @media (prefers-color-scheme: dark) {
   :root {
     --i75-yellow: #e0c060;
@@ -556,7 +557,10 @@ _HEAD = (
     '<h1>Interstate 75 Flight Display'
     '<span class="refresh-badge" id="refresh-badge" title="auto-updates via /status">&#x21bb; live</span>'
     '</h1>'
+    '<div class="dash-header-links">'
+    '<a href="/wifi" role="button" class="edit-config secondary">WiFi</a>'
     '<a href="/config-editor" role="button" class="edit-config">Edit config</a>'
+    '</div>'
     '</header>'
     '<article id="flight-card">'
     '<header>Current flight</header>'

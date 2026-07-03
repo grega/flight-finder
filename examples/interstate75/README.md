@@ -13,7 +13,7 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
 Once connected to the I75 device:
-  - Copy `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, and `config_editor.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
+  - Copy `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, `config_editor.py`, and `wifi_setup.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
   - Edit `config.py`:
     - Set `API_URL` to the deployed Flight Finder Service
     - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
@@ -22,14 +22,32 @@ Once connected to the I75 device:
       - Set `QUIET_ENABLED = False` to disable quiet time entirely (display always on)
       - Be sure to set `UTC_OFFSET` to correctly calculate quiet time based on your timezone
     - Other options include `SHOW_ALTITUDE` (cycles altitude alongside distance), `DISTANCE_UNIT`, `ALTITUDE_UNIT`, `ALTITUDE_CEILING_FT` (ignore flights above this altitude - useful to filter out cruise overflights and focus on flights arriving/departing nearby airports), and scroll/refresh timing
-  - Create a `secrets.py` file containing:
+  - Provide WiFi credentials and the API key - **either option works, and direct file editing always remains available** (including to recover from a bad save made via the web UI):
+    - **Option A - create `secrets.py` directly** (over USB, exactly as before):
 
-    ```python
-    WIFI_SSID = ""
-    WIFI_PASSWORD = ""
-    FLIGHT_FINDER_API_KEY = ""
-    ```
-  Run the `flight_display.py` script to start displaying flights
+      ```python
+      WIFI_SSID = ""
+      WIFI_PASSWORD = ""
+      FLIGHT_FINDER_API_KEY = ""
+      ```
+    - **Option B - use the setup hotspot**: skip `secrets.py` entirely. On first boot the device starts an open WiFi hotspot named `FlightDisplay-XXXX` (shown on the LED matrix). Join it and open `http://192.168.7.47` - the setup page lets you pick a network (with scan), enter the password and API key, and it tests the credentials while the hotspot stays up, then shows the device's new LAN IP before rebooting. See [WiFi setup mode](#wifi-setup-mode) below.
+  - Run the `flight_display.py` script to start displaying flights
+
+### WiFi setup mode
+
+The device falls back to a provisioning hotspot ("setup mode") whenever it can't get online:
+
+- **No credentials**: `secrets.py` missing or `WIFI_SSID` empty.
+- **Connection failure**: 3 failed attempts to join the configured network (wrong password, network gone, router offline). In this case the device also **auto-retries the saved network every 60s** while in setup mode, so a transient router outage heals itself.
+- **Forced**: hold the **SW_A button while powering on**.
+
+In setup mode the matrix alternates between the hotspot name and `http://192.168.7.47`. The setup page (`/wifi`) tests submitted credentials while keeping the hotspot up - the CYW43 radio supports AP+STA concurrently - and reports the device's new LAN IP back to the page **before** you leave the hotspot, solving the "how do I find it now?" problem. Credentials are only persisted to `secrets.py` after a verified join, then the device reboots into normal operation (after 60s, or immediately via the reboot button).
+
+Notes:
+- Your phone may warn "this network has no internet" when joining the hotspot - choose to stay connected.
+- The hotspot briefly drops clients while the radio hops to the target network's channel; the page rides this out, and the new IP is also shown on the LED matrix. The device also sets its hostname, so `http://flightdisplay.local/` may work depending on your OS and firmware mDNS support.
+- The same page is available at `/wifi` in normal operation (linked from the dashboard) for changing networks; a save there reboots the device, and if the new network fails it lands back in setup mode.
+- Missing only the API key? The device connects to WiFi and parks on a "No API key" screen showing its IP - set the key via `/wifi`.
 
 ### Display panel configuration
 
@@ -65,7 +83,6 @@ COLOR_ORDER = Interstate75.COLOR_ORDER_GRB
 
 Other orderings are available on the `Interstate75` class (`COLOR_ORDER_BGR`, `COLOR_ORDER_BRG`, `COLOR_ORDER_RBG`, `COLOR_ORDER_GBR`) - try each if neither RGB nor GRB looks right. The easiest way to identify the correct one is to render a known colour (eg. the WiFi-connecting message uses WHITE on a black background, and once you see a real flight, line 1 is YELLOW, line 2 is CYAN + BLUE, and line 3 is MAGENTA).
 
-
 ## Pushing updates over WiFi
 
 Once the device has been bootstrapped (via USB, as above), further iterations on `flight_display.py` and on the per-device `config.py` can be pushed over WiFi using `push.py`. The device runs a small HTTP server (`webserver.py`) on port 80 that exposes upload/download/reboot endpoints; `push.py` is the laptop-side client.
@@ -81,7 +98,6 @@ Then:
 ```bash
 ./push.py code                  # push flight_display.py as main.py and reboot
 ./push.py file dashboard.py     # push any other local .py file under its same name and reboot
-./push.py file webserver.py     #   (eg. iterating on dashboard styling, webserver tweaks)
 ./push.py config fetch          # download device's config.py to _device/config.py
 ./push.py config push           # upload _device/config.py and reboot
 ./push.py reboot                # just reboot
@@ -105,10 +121,14 @@ For reference, the device exposes:
 - `GET /config-editor` - HTML form for editing the device's `config.py` from a browser (served by `config_editor.py`, imported lazily on first use). Loads the current values via `GET /config`, lets you edit the simple settings (location, units, scrolling, quiet hours, refresh interval, etc.), and on save rewrites only those values preserving comments, layout, and the `DISPLAY_TYPE`/`COLOR_ORDER` expressions, before pushing the file back via `/upload` and rebooting.
 - `GET /logs` - recent `print()` output, captured via a `builtins.print` monkey-patch into a fixed-size RAM ring buffer (~4 KB). Never persisted to flash, so it imposes no storage cost regardless of run duration. Older lines are discarded as new ones arrive.
 - `GET /config` - returns the device's current `config.py`
+- `GET /wifi` - HTML WiFi setup page (served by `wifi_setup.py`, imported lazily; fully self-contained with no CDN assets since setup-hotspot clients have no internet). See [WiFi setup mode](#wifi-setup-mode).
+- `GET /wifi/scan` - JSON list of nearby networks (SSID, RSSI, secured), deduped and sorted by signal strength.
+- `GET /wifi/status` - JSON provisioning state (`mode`, `phase`, `ip`, `error`, ...); the setup page polls this while a join is being tested.
+- `POST /wifi/save` - JSON `{ssid, password, api_key}`: writes `secrets.py` without testing (blank `api_key` keeps the existing key; extra hand-added lines/comments in the file are preserved) and reboots. In setup mode there is also `POST /wifi/connect`, which tests the credentials live before saving - it isn't registered in normal mode since it would drop the current connection.
 - `POST /upload?path=<filename>.py` - writes the request body to that file. The `path` is restricted to safe Python module names (alphanumeric + underscores, `.py` extension) to prevent path traversal or accidental clobbering of system files.
 - `POST /reboot` - `machine.reset()` after flushing the response
 
-The endpoints have no auth, so they assume a trusted LAN.
+The endpoints have no auth, so they assume a trusted LAN. In setup mode the trust boundary is "anyone who can join the open `FlightDisplay-XXXX` hotspot", and submitted credentials cross it as plain HTTP - setup mode is transient by design (the device reboots out of it once credentials work). `/upload`, `/logs`, and `/reboot` stay available in setup mode so `push.py` can still fix a device that's stuck there.
 
 ## Emulator
 
