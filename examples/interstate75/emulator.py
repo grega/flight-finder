@@ -219,6 +219,13 @@ sys.modules['network'] = MockNetwork()
 sys.modules['ntptime'] = MockNTPTime()
 sys.modules['urequests'] = MockUrequests()
 
+# CPython's time module lacks MicroPython's ticks API, which flight_display
+# uses at import time (_boot_ticks_ms) - patch it in before that import
+time.ticks_ms = lambda: int(time.monotonic() * 1000)
+time.ticks_add = lambda t, delta: t + delta
+time.ticks_diff = lambda a, b: a - b
+time.sleep_ms = lambda ms: time.sleep(ms / 1000)
+
 # mock the Interstate75 module
 class Interstate75Module:
     DISPLAY_INTERSTATE75_64X32 = 0
