@@ -99,7 +99,7 @@ summary[role="button"] { font-size: 0.875rem; }
     {key:"REFRESH_INTERVAL", label:"Refresh interval (s)", type:"number", step:"1", min:"30",
      help:"How often new flight data is fetched. 30s or more."},
     {key:"API_URL",       label:"API URL", type:"url"},
-    {key:"USER_AGENT_ID", label:"User-agent ID", type:"string"},
+    {key:"USER_AGENT_ID", label:"User-agent ID", type:"string", help:"Used to identify requests to the API, use something like your name, street name or other identifier."},
     {section:"Scrolling"},
     {key:"SCROLL_ENABLED",          label:"Scroll long text", type:"bool"},
     {key:"SCROLL_PAUSE_MS",         label:"Scroll pause (ms)", type:"number", step:"1", min:"0"},
