@@ -10,6 +10,7 @@ Register handlers with `route()` from main.py; this module knows nothing about
 flights, config files, or filesystem layout.
 """
 
+import gc
 import socket
 
 _BUFFER_SIZE = 1024
@@ -119,6 +120,11 @@ def _handle(conn):
         _send(conn, 404, "text/plain", f"No route for {method} {path}")
         return
 
+    # Handlers can need large contiguous allocations (the dashboard page is a
+    # single ~23KB string); collect first so heap fragmentation from the main
+    # loop doesn't fail them with MemoryError.
+    gc.collect()
+
     try:
         result = handler(body, query)
     except Exception as e:
@@ -154,6 +160,10 @@ def _send(conn, status, content_type, body):
         f"Content-Length: {len(body)}\r\n"
         f"Connection: close\r\n\r\n"
     ).encode()
-    conn.sendall(header + body)
+    # Two sends rather than one: `header + body` would allocate a full copy of
+    # the response, and large bodies (dashboard, /logs) can fail that allocation
+    # on a fragmented heap.
+    conn.sendall(header)
+    conn.sendall(body)
 
 
