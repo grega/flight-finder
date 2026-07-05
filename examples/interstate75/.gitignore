@@ -1,4 +1,5 @@
 secrets.py
 secrets_backup.py
+last_crash.txt
 _device/
 .push_host

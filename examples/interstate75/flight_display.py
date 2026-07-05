@@ -34,6 +34,15 @@ ORANGE  = display.create_pen(*((255, 128, 0) if BRIGHT_MODE else (128, 64, 0)))
 # font
 display.set_font("bitmap8")
 
+# Code version, reported in the API User-Agent and on /status. Bump this on
+# each `push.py all` deploy so a fleet view can tell which devices are current.
+VERSION = "1.0.0"
+
+# Last crash persisted here so it survives the reboot that usually follows one
+# (the /logs RAM ring buffer does not). Surfaced on /status; main.py writes it
+# too when the whole program dies.
+CRASH_FILE = "last_crash.txt"
+
 # px between adjacent segments on a multi-segment scrolling line (eg. between the flight number and the distance/altitude value on line 2)
 SEGMENT_GAP = 4
 
@@ -68,6 +77,40 @@ def _install_log_capture():
 
 # Installed at import (not in main()) so the config validation warnings below reach /logs
 _install_log_capture()
+
+def _timestamp():
+    """A human timestamp when NTP has set the clock, else a boot-relative one -
+    the RTC reads year 2021 until the first sync."""
+    try:
+        t = time.localtime()
+        if t[0] >= 2024:
+            return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}Z".format(t[0], t[1], t[2], t[3], t[4], t[5])
+    except Exception:
+        pass
+    return "uptime+{}s (clock not set)".format(_uptime_seconds())
+
+_last_crash_written = None
+
+def _persist_crash(text):
+    """Write the latest crash to flash so it outlives the reboot that often
+    follows. Deduped against the last write so a repeating loop error can't
+    hammer the flash."""
+    global _last_crash_written
+    if text == _last_crash_written:
+        return
+    try:
+        with open(CRASH_FILE, "w") as f:
+            f.write(_timestamp() + "\n" + text)
+        _last_crash_written = text
+    except OSError:
+        pass # out of space / read-only fs - never let logging a crash cause one
+
+def _read_last_crash():
+    try:
+        with open(CRASH_FILE) as f:
+            return f.read()
+    except OSError:
+        return None
 
 def _coerce_refresh_interval(raw_value):
     """Return a safe refresh interval in seconds (minimum 30)."""
@@ -216,6 +259,7 @@ def _collect_status():
     if _last_fetch_ticks_ms is not None:
         last_fetch_age_s = time.ticks_diff(time.ticks_ms(), _last_fetch_ticks_ms) // 1000
     return {
+        "version": VERSION,
         "uptime_s": uptime_s,
         "free_heap_bytes": gc.mem_free(),
         "alloc_heap_bytes": gc.mem_alloc(),
@@ -225,6 +269,7 @@ def _collect_status():
         "last_fetch_age_s": last_fetch_age_s,
         "last_fetch_ok": _last_fetch_ok,
         "last_fetch_error": _last_fetch_error,
+        "last_crash": _read_last_crash(),
         "current_flight": _current_flight_summary,
         # Surface a few config.py values so the dashboard can match the display (km/mi for distance, ft/m for altitude) and show how often the device fetches new flight data
         "config": {
@@ -258,6 +303,15 @@ def _handle_history(body, query):
 def _handle_logs(body, query):
     return (200, "text/plain; charset=utf-8", bytes(_log_buffer.buf))
 
+def _handle_clear_crash(body, query):
+    global _last_crash_written
+    try:
+        os.remove(CRASH_FILE)
+    except OSError:
+        pass # already gone
+    _last_crash_written = None # let an identical future crash re-persist
+    return (200, "text/plain", "cleared")
+
 def _handle_index(body, query):
     return (200, "text/html; charset=utf-8", dashboard.render_status_html(_collect_status()))
 
@@ -274,6 +328,7 @@ def register_routes():
     webserver.route("POST", "/wifi/save",     _handle_wifi_save)
     webserver.route("POST", "/upload",        _handle_upload)
     webserver.route("POST", "/reboot",        _handle_reboot)
+    webserver.route("POST", "/clear-crash",   _handle_clear_crash)
 
 def poll_webserver():
     """Service one HTTP request if pending, then reboot if /reboot was hit."""
@@ -457,7 +512,7 @@ def fetch_flight_data(api_key):
 
         headers = {
             "X-API-Key": api_key,
-            "User-Agent": f"I75 Matrix Display {USER_AGENT_ID}"
+            "User-Agent": f"I75 Matrix Display/{VERSION} {USER_AGENT_ID}"
         }
 
         print(f"Fetching data from: {url}")
@@ -1003,6 +1058,13 @@ def main():
 
         except Exception as e:
             print(f"Error in main loop: {e}")
+            try:
+                import sys, io
+                buf = io.StringIO()
+                sys.print_exception(e, buf)
+                _persist_crash(buf.getvalue())
+            except Exception:
+                _persist_crash(repr(e))
             display.set_pen(RED)
             display.clear()
             display.text("Error", 2, 2, WIDTH, 1)

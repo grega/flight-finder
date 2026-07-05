@@ -59,6 +59,8 @@ Notes:
 
 Related guard rails: `/upload` writes files atomically (temp file + rename, so a failed upload doesn't leave a corrupted file) and compile-checks `config.py` uploads on the device, rejecting a save that wouldn't import on the next boot. The main loop also self-heals, it reconnects WiFi if the connection drops and reboots after 10 consecutive failed API fetches.
 
+Crashes are persisted to `last_crash.txt` on flash (with a timestamp) so they survive the reboot that usually follows - both a main-loop error and a fatal crash caught by the recovery stub write it. The saved traceback shows up on `/status` (as `last_crash`) and on the dashboard's Device card until dismissed, so a device that rebooted while you weren't looking can still tell you why. This matters because the `/logs` buffer is RAM-only and is lost on reboot.
+
 ### Display panel configuration
 
 LED matrix panels vary in their physical dimensions, scan rates, and how their red/green/blue lines are wired. Two settings in `config.py` need to match your specific panel:
@@ -114,6 +116,8 @@ Then:
 ./push.py reboot                # just reboot
 ```
 
+Bump `VERSION` in `flight_display.py` when you deploy a `push.py all`. The device reports it in the API `User-Agent` header and on `/status`, so a server-side view (or a quick `curl http://<ip>/status | jq .version`) can tell which devices are running the current code - handy once several are out in the field.
+
 ### Editing per-device config
 
 Per-device values (`LATITUDE`/`LONGITUDE`, `DISPLAY_TYPE`, quiet-hour settings, etc.) live on the device itself, not in the repo. The workflow is:
@@ -122,12 +126,25 @@ Per-device values (`LATITUDE`/`LONGITUDE`, `DISPLAY_TYPE`, quiet-hour settings, 
 2. Edit `_device/config.py` locally in your editor.
 3. `./push.py config push` - uploads it back and reboots.
 
+### Future work: pull-based OTA updates
+
+`push.py` is a *push* model: it needs a route to the device (same LAN, or a tunnel), which doesn't exist once a device lives behind someone else's home router. The natural next step for a small fleet is to make updates *pull-based*, reusing the polling the device already does.
+
+The device already contacts the Flight Finder Service every refresh interval, tagged with its `VERSION` (in the `User-Agent`) and `USER_AGENT_ID`. That same channel can carry updates back with no inbound access to the device's network:
+
+1. **Manifest.** The service (or a static URL) publishes a manifest: a target `VERSION` plus the list of module files and their checksums. The device fetches it periodically (e.g. once an hour, or piggybacked on the flight poll).
+2. **Download + verify.** If the manifest version is newer, the device downloads each changed file to a temp name, checks its checksum, and only then `os.rename()`s it into place - the same atomic-write discipline `/upload` already uses.
+3. **Compile-check + reboot.** Compile-check the new modules (as `/upload` already does for `config.py`), then reboot. `main.py`'s recovery mode is the safety net if the new code fails to import or crashes on boot.
+4. **Rollback.** Keep the previous `main.py`/`flight_display.py` (or a version stamp) so a device that crash-loops on a bad update can fall back to the last-good version rather than needing a physical visit. The WiFi-credential rollback added here (`secrets_backup.py`) is the same pattern.
+
+Most of the on-device primitives already exist (atomic writes, compile-checking, recovery mode, version reporting); the missing pieces are the manifest endpoint on the service side and the device-side fetch/verify/swap loop. A command channel (having the flight-poll response optionally carry `{"command": "reboot"}` or "update now") is a lightweight stepping stone worth doing first.
+
 ### Endpoints
 
 For reference, the device exposes:
 
 - `GET /` - HTML status dashboard (styled with [Pico CSS](https://picocss.com/) loaded from CDN). Served as a lightweight static shell that hydrates from `/status` JSON on first paint and then re-polls every 5s. Renders the currently-displayed flight as a hero card (origin → destination IATA codes with airport names linking to Google Maps), a mini [Leaflet](https://leafletjs.com/)/OpenStreetMap map of the aircraft's position relative to the configured home location (plane marker rotated by heading), a "Recent flights" table (from `/history`), device stats (uptime, heap, WiFi RSSI, last fetch, fetch interval), and a reboot button. The map's Leaflet assets and tiles load from CDN (like Pico CSS), and the map degrades to a message if they're unreachable. Visit `http://<device-ip>/` in a browser.
-- `GET /status` - JSON: uptime, free heap, WiFi RSSI, time since last API fetch + success/error, and the currently-displayed flight. Useful as a quick "is it alive and healthy" check (`curl http://<ip>/status | jq`).
+- `GET /status` - JSON: code `version`, uptime, free heap, WiFi RSSI, time since last API fetch + success/error, `last_crash` (the persisted traceback from a previous run, or `null`), and the currently-displayed flight. Useful as a quick "is it alive and healthy" check (`curl http://<ip>/status | jq`).
 - `GET /history` - JSON list of recently-seen flights (newest first), each with flight number, route IATA codes, aircraft model, distance, and how long ago it was seen. Rendered as the "Recent flights" table on the dashboard.
 - `GET /config-editor` - HTML form for editing the device's `config.py` from a browser (served by `config_editor.py`, imported lazily on first use). Loads the current values via `GET /config`, lets you edit the simple settings (location, units, scrolling, quiet hours, refresh interval, etc.), and on save rewrites only those values preserving comments, layout, and the `DISPLAY_TYPE`/`COLOR_ORDER` expressions, before pushing the file back via `/upload` and rebooting.
 - `GET /logs` - recent `print()` output, captured via a `builtins.print` monkey-patch into a fixed-size RAM ring buffer (~4 KB). Never persisted to flash, so it imposes no storage cost regardless of run duration. Older lines are discarded as new ones arrive.
@@ -138,6 +155,7 @@ For reference, the device exposes:
 - `POST /wifi/save` - JSON `{ssid, password, api_key}`: writes `secrets.py` without testing (blank `api_key` keeps the existing key; extra hand-added lines/comments in the file are preserved) and reboots. In normal mode the previous `secrets.py` is first copied to `secrets_backup.py`; if the new network can't connect after the reboot, the device restores it automatically. In setup mode there is also `POST /wifi/connect`, which tests the credentials live before saving - it isn't registered in normal mode since it would drop the current connection.
 - `POST /upload?path=<filename>.py` - writes the request body to that file. The `path` is restricted to safe Python module names (alphanumeric + underscores, `.py` extension) to prevent path traversal or accidental clobbering of system files.
 - `POST /reboot` - `machine.reset()` after flushing the response
+- `POST /clear-crash` - deletes the persisted `last_crash.txt` (also reachable via the "Dismiss" button on the dashboard's crash row)
 
 The endpoints have no auth, so they assume a trusted LAN. In setup mode the trust boundary is "anyone who can join the open `FlightDisplay-XXXX` hotspot", and submitted credentials cross it as plain HTTP - setup mode is transient by design (the device reboots out of it once credentials work). `/upload`, `/logs`, and `/reboot` stay available in setup mode so `push.py` can still fix a device that's stuck there.
 

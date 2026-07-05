@@ -322,14 +322,24 @@ _SCRIPT = """
     else if(info.last_fetch_ok===false) fetch='<span class="fetch-fail">FAIL: '+esc(info.last_fetch_error)+'</span>';
     var interval = (info.config && info.config.refresh_interval_s!=null)
       ? 'every '+info.config.refresh_interval_s+'s' : 'n/a';
+    // Only shown when the device has a persisted crash from a previous run;
+    // the <details> keeps the (potentially multi-line) traceback tucked away.
+    var crash = info.last_crash
+      ? '<tr><th>Last crash</th><td><details><summary class="fetch-fail">show traceback</summary>'+
+        '<pre style="white-space:pre-wrap;font-size:0.75rem;margin:0.4rem 0 0">'+esc(info.last_crash)+'</pre>'+
+        '<button type="button" class="secondary outline" style="width:auto;margin:0.4rem 0 0;padding:0.2rem 0.7rem;font-size:0.8rem" onclick="clearCrash()">Dismiss</button>'+
+        '</details></td></tr>'
+      : '';
     return '<header>Device</header>'+
       '<table>'+
       '<tr><th>IP</th><td>'+esc(info.ip)+'</td></tr>'+
+      '<tr><th>Version</th><td>'+esc(info.version || 'n/a')+'</td></tr>'+
       '<tr><th>Uptime</th><td>'+fmtUptime(info.uptime_s)+'</td></tr>'+
       '<tr><th>WiFi RSSI</th><td>'+rssiLabel(info.rssi_dbm)+'</td></tr>'+
       '<tr><th>Free heap</th><td>'+fmtBytes(info.free_heap_bytes)+' (alloc: '+fmtBytes(info.alloc_heap_bytes)+')</td></tr>'+
       '<tr><th>Last fetch</th><td>'+fmtAge(info.last_fetch_age_s)+' &middot; '+fetch+'</td></tr>'+
       '<tr><th>Fetch interval</th><td>'+interval+'</td></tr>'+
+      crash+
       '</table>';
   }
 
@@ -519,6 +529,13 @@ _SCRIPT = """
         .then(function(){ document.body.style.opacity='.4'; setTimeout(function(){location.reload();}, 3000); })
         .catch(function(e){ alert('Reboot failed: '+e); });
     }
+  };
+
+  window.clearCrash = function(){
+    // /status re-reads the (now-deleted) file, so refresh() drops the row
+    fetch('/clear-crash',{method:'POST'})
+      .then(function(){ refresh(); })
+      .catch(function(e){ alert('Clear failed: '+e); });
   };
 
   // First paint from data embedded in the page (no round-trip), then poll.

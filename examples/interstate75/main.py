@@ -8,6 +8,25 @@ import sys
 import time
 
 RUNTIME_CRASH_REBOOT_S = 600
+CRASH_FILE = "last_crash.txt"  # kept in sync with flight_display.CRASH_FILE
+
+
+def _persist_crash(text):
+    """Save the crash so it survives the self-reboot below and shows up on the
+    next boot's /status. Duplicated (not imported) so recovery never depends on
+    the module that just crashed."""
+    try:
+        stamp = "boot crash"
+        try:
+            t = time.localtime()
+            if t[0] >= 2024:
+                stamp = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}Z".format(t[0], t[1], t[2], t[3], t[4], t[5])
+        except Exception:
+            pass
+        with open(CRASH_FILE, "w") as f:
+            f.write(stamp + "\n" + text)
+    except OSError:
+        pass
 
 
 def _traceback_text(exc):
@@ -108,6 +127,7 @@ def _recovery(exc, reboot_after_s=None):
     tb = _traceback_text(exc)
     print("RECOVERY: flight display crashed:")
     print(tb)
+    _persist_crash(tb)
 
     import machine
     try:
