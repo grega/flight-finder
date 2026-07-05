@@ -3,11 +3,16 @@ Web service for finding closest flights using FlightRadarAPI
 """
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from FlightRadarAPI import FlightRadar24API
 from math import radians, cos
+from datetime import datetime, timezone
+from html import escape
 import airportsdata
 import os
+import re
+
+import fleet_store
 
 load_dotenv()
 
@@ -15,6 +20,11 @@ app = Flask(__name__)
 fr_api = FlightRadar24API()
 
 API_KEY = os.getenv("SERVICE_API_KEY", None)
+# Generic admin token guarding the fleet view (and any future admin endpoints).
+# Deliberately separate from SERVICE_API_KEY so it can be rotated independently.
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", None)
+
+fleet_store.init_db()
 
 # Offline IATA -> airport metadata, loaded once at startup. Used to fill in airport names when FlightRadar24 returns only the IATA code (its free endpoint intermittently omits the full route detail)
 _AIRPORTS = airportsdata.load("IATA")
@@ -45,6 +55,49 @@ def validate_api_key():
         return True
     provided_key = request.headers.get('X-API-Key')
     return provided_key == API_KEY
+
+
+# User-Agent the devices send, eg. "I75 Matrix Display/1.0.0 Flight Tracker 1".
+# Group 1 is the code version, group 2 the human label (may contain spaces).
+_DEVICE_UA_RE = re.compile(r"I75 Matrix Display/(\S+)\s+(.+)")
+
+
+def record_heartbeat():
+    """Log the calling device from an authenticated flight poll. Best-effort:
+    a store hiccup must never break the flight response the device needs."""
+    try:
+        ua = request.headers.get('User-Agent', '')
+        match = _DEVICE_UA_RE.match(ua)
+        version = match.group(1) if match else None
+        label = match.group(2).strip() if match else (ua or None)
+        # access_route[0] is the client from X-Forwarded-For (behind Dokku's
+        # nginx remote_addr is just the proxy). This is the household's public
+        # egress IP, not the device's LAN IP.
+        ip = request.access_route[0] if request.access_route else request.remote_addr
+        device_id = request.headers.get('X-Device-Id') or label or ip
+        fleet_store.record(device_id, label, version, ip)
+    except Exception as e:
+        app.logger.warning("heartbeat record failed: %s", e)
+
+
+def require_admin():
+    """Gate the fleet endpoints. Accepts the admin token via X-Admin-Token,
+    Authorization: Bearer, HTTP Basic Auth password, or ?token=. Deny-by-default
+    when unset - the fleet view exposes device IPs, so unlike the flight
+    endpoints it must not silently open."""
+    if ADMIN_TOKEN is None:
+        return False
+    provided = (
+        request.headers.get('X-Admin-Token')
+        or request.args.get('token')
+    )
+    if not provided:
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            provided = auth_header[len('Bearer '):]
+        elif request.authorization and request.authorization.password:
+            provided = request.authorization.password  # HTTP Basic (browser prompt)
+    return provided == ADMIN_TOKEN
 
 
 def serialize_flight(flight):
@@ -128,6 +181,7 @@ def get_closest_flight():
     """Find the closest flight to given coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
+    record_heartbeat()
 
     lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:
@@ -187,6 +241,7 @@ def get_flights_in_radius():
     """Find all flights within a given radius of coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
+    record_heartbeat()
 
     lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:
@@ -223,6 +278,105 @@ def get_flights_in_radius():
 
     except Exception as e:
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+def _relative_age(last_seen_iso):
+    """(seconds_ago, human_string) for an ISO timestamp, or (None, 'never')."""
+    if not last_seen_iso:
+        return None, "never"
+    try:
+        seen = datetime.fromisoformat(last_seen_iso)
+        secs = int((datetime.now(timezone.utc) - seen).total_seconds())
+    except (ValueError, TypeError):
+        return None, "unknown"
+    if secs < 0:
+        secs = 0
+    if secs < 60:
+        return secs, f"{secs}s ago"
+    if secs < 3600:
+        return secs, f"{secs // 60}m ago"
+    if secs < 86400:
+        return secs, f"{secs // 3600}h {secs % 3600 // 60}m ago"
+    return secs, f"{secs // 86400}d ago"
+
+
+# A device is flagged offline once it misses several polls (default interval 60s).
+_OFFLINE_AFTER_S = 300
+
+
+def _render_fleet_html(devices):
+    """Self-contained HTML fleet table (no external assets), auto-refreshing."""
+    if devices:
+        rows = []
+        for d in devices:
+            secs, human = _relative_age(d.get("last_seen"))
+            offline = secs is None or secs > _OFFLINE_AFTER_S
+            seen_cell = (f'<span class="{"offline" if offline else "online"}">'
+                         f'{"●" if not offline else "○"} {escape(human)}</span>')
+            rows.append(
+                "<tr>"
+                f"<td class=mono>{escape(str(d.get('device_id') or ''))}</td>"
+                f"<td>{escape(str(d.get('label') or ''))}</td>"
+                f"<td class=mono>{escape(str(d.get('version') or '?'))}</td>"
+                f"<td>{seen_cell}</td>"
+                f"<td class=mono>{escape(str(d.get('last_ip') or ''))}</td>"
+                f"<td class=num>{escape(str(d.get('request_count') or 0))}</td>"
+                f"<td class=mono>{escape(str(d.get('first_seen') or ''))}</td>"
+                "</tr>"
+            )
+        body = "".join(rows)
+    else:
+        body = ('<tr><td colspan=7 class=empty>No devices have checked in yet.</td></tr>')
+
+    return (
+        "<!DOCTYPE html><html lang=en><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<meta http-equiv=refresh content=30>"
+        "<title>Flight Finder fleet</title><style>"
+        "body{font-family:system-ui,sans-serif;margin:0;background:#f5f6f8;color:#1c1e21}"
+        "main{max-width:60rem;margin:0 auto;padding:1.2rem}"
+        "h1{font-size:1.3rem;margin:0 0 0.2rem}"
+        ".sub{color:#666;font-size:0.85rem;margin:0 0 1rem}"
+        "table{width:100%;border-collapse:collapse;background:#fff;"
+        "border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)}"
+        "th,td{text-align:left;padding:0.5rem 0.7rem;border-bottom:1px solid #eceef1;font-size:0.875rem}"
+        "th{background:#fafbfc;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.03em;color:#666}"
+        ".mono{font-family:ui-monospace,Menlo,monospace;font-size:0.8rem}"
+        ".num{text-align:right}"
+        ".online{color:#157347;font-weight:600}.offline{color:#c62828;font-weight:600}"
+        ".empty{text-align:center;color:#888;padding:1.5rem}"
+        "</style></head><body><main>"
+        "<h1>Flight Finder fleet</h1>"
+        f"<p class=sub>{len(devices)} device(s) &middot; auto-refreshes every 30s</p>"
+        "<table><thead><tr>"
+        "<th>Device ID</th><th>Label</th><th>Version</th><th>Last seen</th>"
+        "<th>Household IP</th><th>Requests</th><th>First seen</th>"
+        "</tr></thead><tbody>" + body + "</tbody></table></main></body></html>"
+    )
+
+
+@app.route('/fleet.json', methods=['GET'])
+def fleet_json():
+    """Fleet data as JSON (admin-only)."""
+    if ADMIN_TOKEN is None:
+        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not require_admin():
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({"devices": fleet_store.list_devices()}), 200
+
+
+@app.route('/fleet', methods=['GET'])
+def fleet_view():
+    """Human-facing fleet table (admin-only). Prompts for HTTP Basic Auth in a
+    browser when unauthorized - enter the admin token as the password."""
+    if ADMIN_TOKEN is None:
+        return Response("ADMIN_TOKEN is not configured on the server", status=503)
+    if not require_admin():
+        return Response(
+            "Authentication required", status=401,
+            headers={"WWW-Authenticate": 'Basic realm="Flight fleet"'},
+        )
+    return Response(_render_fleet_html(fleet_store.list_devices()), mimetype="text/html")
 
 
 @app.route('/', methods=['GET'])

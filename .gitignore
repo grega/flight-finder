@@ -3,3 +3,6 @@
 .DS_Store
 __pycache__/
 .pytest_cache/
+fleet.db
+fleet.db-wal
+fleet.db-shm

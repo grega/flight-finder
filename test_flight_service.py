@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from flight_service import app, calculate_bounds, API_KEY, serialize_flight, airport_name
+import fleet_store
 
 @pytest.fixture(autouse=True)
 def disable_api_key(monkeypatch):
@@ -8,6 +9,14 @@ def disable_api_key(monkeypatch):
     Temporarily override API_KEY to None for all tests.
     """
     monkeypatch.setattr("flight_service.API_KEY", None)
+
+@pytest.fixture(autouse=True)
+def isolated_fleet_db(tmp_path, monkeypatch):
+    """Point the fleet store at a fresh per-test SQLite file. Every flight
+    request records a heartbeat, so without this the tests would share (and
+    pollute) one database."""
+    monkeypatch.setattr("fleet_store.DB_PATH", str(tmp_path / "fleet.db"))
+    fleet_store.init_db()
 
 @pytest.fixture
 def client():
@@ -315,4 +324,128 @@ def test_flights_in_radius_max_altitude_filter(mock_api, client):
     assert data["found"] is True
     assert len(data["flights"]) == 1
     assert data["flights"][0]["id"] == "LOW"
+
+
+# ---- Fleet store ----------------------------------------------------------
+
+def test_fleet_store_insert_then_upsert():
+    """First record() inserts; a second for the same device updates its fields,
+    bumps request_count, and preserves first_seen."""
+    fleet_store.record("devA", "Greg Test", "1.0.0", "203.0.113.5")
+    devices = fleet_store.list_devices()
+    assert len(devices) == 1
+    first = devices[0]
+    assert first["device_id"] == "devA"
+    assert first["request_count"] == 1
+    assert first["version"] == "1.0.0"
+
+    fleet_store.record("devA", "Greg Test", "1.1.0", "203.0.113.9")
+    devices = fleet_store.list_devices()
+    assert len(devices) == 1  # still one row - deduped by device_id
+    updated = devices[0]
+    assert updated["request_count"] == 2
+    assert updated["version"] == "1.1.0"       # refreshed
+    assert updated["last_ip"] == "203.0.113.9" # refreshed
+    assert updated["first_seen"] == first["first_seen"]  # preserved
+
+
+def test_fleet_store_orders_by_last_seen():
+    fleet_store.record("old", "Old", "1.0.0", "10.0.0.1")
+    fleet_store.record("new", "New", "1.0.0", "10.0.0.2")
+    ids = [d["device_id"] for d in fleet_store.list_devices()]
+    assert ids[0] == "new"  # most-recently-seen first
+
+
+# ---- Heartbeat recording via the flight endpoints -------------------------
+
+@patch("flight_service.fr_api")
+def test_closest_flight_records_heartbeat(mock_api, client):
+    """An authenticated flight poll records the calling device, parsing version
+    and label out of the User-Agent."""
+    mock_api.get_flights.return_value = []  # no flights - still counts as a poll
+    response = client.get(
+        "/closest-flight?lat=51.5&lon=-0.26&radius=10",
+        headers={
+            "X-Device-Id": "abc123def456",
+            "User-Agent": "I75 Matrix Display/2.3.4 Greg Kitchen",
+        },
+    )
+    assert response.status_code == 200
+    devices = fleet_store.list_devices()
+    assert len(devices) == 1
+    d = devices[0]
+    assert d["device_id"] == "abc123def456"
+    assert d["version"] == "2.3.4"
+    assert d["label"] == "Greg Kitchen"
+
+
+@patch("flight_service.fr_api")
+def test_heartbeat_falls_back_when_no_device_id(mock_api, client):
+    """Without X-Device-Id the label (or IP) becomes the key, so pre-update
+    devices still appear."""
+    mock_api.get_flights.return_value = []
+    client.get(
+        "/closest-flight?lat=51.5&lon=-0.26&radius=10",
+        headers={"User-Agent": "I75 Matrix Display/1.0.0 Legacy Device"},
+    )
+    devices = fleet_store.list_devices()
+    assert len(devices) == 1
+    assert devices[0]["device_id"] == "Legacy Device"
+    assert devices[0]["version"] == "1.0.0"
+
+
+# ---- Fleet endpoints + admin auth -----------------------------------------
+
+def test_fleet_json_503_when_token_unset(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", None)
+    response = client.get("/fleet.json")
+    assert response.status_code == 503
+
+
+def test_fleet_json_401_with_wrong_token(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    response = client.get("/fleet.json", headers={"X-Admin-Token": "nope"})
+    assert response.status_code == 401
+
+
+@patch("flight_service.fr_api")
+def test_fleet_json_200_with_valid_token(mock_api, client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    mock_api.get_flights.return_value = []
+    client.get(
+        "/closest-flight?lat=51.5&lon=-0.26&radius=10",
+        headers={"X-Device-Id": "dev1", "User-Agent": "I75 Matrix Display/1.0.0 Kitchen"},
+    )
+    response = client.get("/fleet.json", headers={"X-Admin-Token": "sekret"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data["devices"]) == 1
+    assert data["devices"][0]["device_id"] == "dev1"
+
+
+def test_fleet_json_accepts_token_query_param(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    assert client.get("/fleet.json?token=sekret").status_code == 200
+
+
+def test_fleet_html_prompts_for_basic_auth(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    response = client.get("/fleet")
+    assert response.status_code == 401
+    assert response.headers.get("WWW-Authenticate", "").startswith("Basic")
+
+
+def test_fleet_html_503_when_token_unset(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", None)
+    assert client.get("/fleet").status_code == 503
+
+
+def test_fleet_html_renders_with_valid_token(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    fleet_store.record("dev-html", "Living Room", "1.0.0", "203.0.113.7")
+    response = client.get("/fleet", headers={"X-Admin-Token": "sekret"})
+    assert response.status_code == 200
+    assert response.mimetype == "text/html"
+    html = response.get_data(as_text=True)
+    assert "dev-html" in html and "Living Room" in html
 

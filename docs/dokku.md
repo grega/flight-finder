@@ -52,6 +52,32 @@ Using Let's Encrypt (back on the remote machine):
 dokku letsencrypt:enable flight-finder
 ```
 
+### 6. Persistent storage (fleet database)
+
+The fleet view records a heartbeat per device into a SQLite database. A container's filesystem is wiped on every deploy, so the database must live on a mounted host volume to survive `git push dokku main`.
+
+On the Dokku server:
+
+```bash
+# Create a host directory with the right ownership, then mount it into the app
+dokku storage:ensure-directory flight-finder
+dokku storage:mount flight-finder /var/lib/dokku/data/storage/flight-finder:/app/storage
+
+# Point the app at a database on the volume, and set the fleet admin token
+dokku config:set flight-finder FLEET_DB_PATH=/app/storage/fleet.db ADMIN_TOKEN=your_admin_secret
+
+dokku ps:restart flight-finder
+
+# Confirm the mount
+dokku storage:report flight-finder
+```
+
+Notes:
+- `storage:ensure-directory` creates the host directory owned by the container's runtime user, so the app can write to it.
+- The data now survives redeploys and restarts because it lives on the host volume, not the ephemeral container filesystem.
+- WAL mode creates sibling `fleet.db-wal` and `fleet.db-shm` files next to `fleet.db` on the volume - this is expected.
+- `ADMIN_TOKEN` guards `/fleet` (HTML) and `/fleet.json`. In a browser, `/fleet` prompts for HTTP Basic Auth: enter anything as the username and the admin token as the password. For scripts, send it as `X-Admin-Token: <token>` (or `?token=<token>`). Without `ADMIN_TOKEN` set, the fleet endpoints refuse to serve (503) rather than exposing device IPs.
+
 ## Dokku Configuration Options
 
 ### Scale workers

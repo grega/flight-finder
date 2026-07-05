@@ -210,6 +210,25 @@ Query Parameters:
 Headers:
 - `X-API-Key` (optional): API key, if authentication is enabled / required
 
+### Fleet tracking
+
+Every authenticated call to `/closest-flight` and `/flights-in-radius` doubles as a device heartbeat: the service records the caller (from the `User-Agent` and an optional `X-Device-Id` header), its reported code version, source IP, and last-seen time into a small SQLite database (`FLEET_DB_PATH`, default `fleet.db`). This is how the Interstate 75 displays report in - see [examples/interstate75](examples/interstate75/). No extra requests are made; it piggybacks on the polling the devices already do.
+
+The fleet endpoints are guarded by a separate `ADMIN_TOKEN` env var (independent of `SERVICE_API_KEY`). When `ADMIN_TOKEN` is unset they return `503` rather than exposing device data.
+
+#### `GET /fleet`
+
+Human-readable HTML table of known devices (ID, label, version, last-seen with an offline flag, household IP, request count). In a browser it prompts for HTTP Basic Auth - enter the admin token as the password.
+
+#### `GET /fleet.json`
+
+The same data as JSON.
+
+Headers / auth (both endpoints):
+- `X-Admin-Token: <token>`, `Authorization: Bearer <token>`, HTTP Basic Auth password, or `?token=<token>`.
+
+For persistent storage across deploys, see [docs/dokku.md](docs/dokku.md).
+
 ## Debug
 
 ```python
