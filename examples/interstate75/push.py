@@ -83,10 +83,6 @@ def _upload_file(host, src_path, remote_name):
 
 
 def _reboot(host):
-    # /reboot is fire-and-forget by nature: the device sends "Rebooting" and
-    # immediately resets. There's an inherent race between the FIN reaching us
-    # and the chip going offline, so a ConnectionResetError here is expected
-    # behaviour rather than a real failure.
     try:
         status, response = _http("POST", host, "/reboot", b"", timeout=5)
         print(f"reboot: HTTP {status} {response.decode(errors='replace').strip()}")
