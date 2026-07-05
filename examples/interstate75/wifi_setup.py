@@ -36,6 +36,7 @@ AUTO_RETRY_INTERVAL_S = 60   # retry saved creds this often when reason == "conn
 REBOOT_AFTER_SAVE_S = 60
 FAILED_SCREEN_S = 5
 SECRETS_PATH = "secrets.py"
+SECRETS_BACKUP_PATH = "secrets_backup.py" # rollback copy; flight_display restores it if new creds fail
 
 _SECRET_KEYS = ("WIFI_SSID", "WIFI_PASSWORD", "FLIGHT_FINDER_API_KEY")
 
@@ -297,12 +298,33 @@ def handle_connect(body, query):
     return (200, "application/json", json.dumps({"ok": True}))
 
 
+def _backup_secrets():
+    """Keep the current (working) secrets.py as a rollback copy before a
+    normal-mode save overwrites it with untested creds. Skips a file that
+    doesn't parse - restoring broken secrets would be worse than setup mode."""
+    try:
+        with open(SECRETS_PATH) as f:
+            content = f.read()
+        compile(content, SECRETS_PATH, "exec")
+    except Exception:
+        return
+    try:
+        with open(SECRETS_BACKUP_PATH, "w") as f:
+            f.write(content)
+    except OSError:
+        pass
+
+
 def handle_save(body, query):
     """Write secrets without testing them first. Normal-mode save path, and a
     manual fallback in setup mode (starts the reboot countdown there)."""
     creds = _parse_creds(body)
     if creds is None:
         return (400, "application/json", json.dumps({"error": "need JSON with a non-empty ssid"}))
+    if _state is None:
+        # Normal mode: the creds being replaced got us online, so keep them
+        # for the automatic rollback if the new ones can't connect
+        _backup_secrets()
     try:
         write_secrets(creds["ssid"], creds["password"], creds["api_key"])
     except Exception as e:
@@ -423,8 +445,8 @@ small { color: #666; }
     if(s.ap_ssid) apSsid = s.ap_ssid;
     if(mode === "normal"){
       $("mode-note").textContent = "Connected to " + (s.ssid || "WiFi") + (s.ip ? " (" + s.ip + ")" : "") +
-        ". Saving reboots the device onto the new network; if that fails 3 times it starts the " +
-        (apSsid || "FlightDisplay") + " setup hotspot again.";
+        ". Saving reboots the device onto the new network; if it can't connect, it restores " +
+        "the previous credentials and reboots back onto this one.";
       $("go").textContent = "Save & reboot";
       return;
     }
@@ -496,7 +518,7 @@ small { color: #666; }
       })
       .then(function(){
         if(mode === "normal"){
-          setStatus("Saved - the device is rebooting onto the new network. If that fails 3 times it starts the setup hotspot.", "ok");
+          setStatus("Saved - the device is rebooting onto the new network. If it can't connect, it restores the previous credentials.", "ok");
         }
       })
       .catch(function(e){ setStatus("Failed: " + e.message, "err"); });

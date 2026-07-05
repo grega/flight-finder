@@ -168,13 +168,20 @@ class MockDisplay:
 class MockInterstate75:
     COLOR_ORDER_RGB = 0
     COLOR_ORDER_GRB = 1
+    COLOR_ORDER_BGR = 2
+    COLOR_ORDER_BRG = 3
+    COLOR_ORDER_RBG = 4
+    COLOR_ORDER_GBR = 5
+
+    # (width, height) keyed by the Interstate75Module.DISPLAY_INTERSTATE75_*
+    # constants below; mirror the dimensions the real library would report so
+    # layouts test faithfully
+    _PANEL_SIZES = {0: (64, 32), 1: (64, 64), 2: (128, 32), 3: (128, 64), 4: (128, 128)}
 
     def __init__(self, display, color_order):
-        # display is one of the Interstate75Module.DISPLAY_INTERSTATE75_* constants below;
-        # mirror the dimensions the real library would report so layouts test faithfully.
-        height = 64 if display == 1 else 32
-        self.display = MockDisplay(64, height)
-        self.width = 64
+        width, height = self._PANEL_SIZES.get(display, (64, 32))
+        self.display = MockDisplay(width, height)
+        self.width = width
         self.height = height
         self.color_order = color_order
         
@@ -212,7 +219,7 @@ class MockInterstate75:
             output.append("║\n")
             
         output.append("╚" + "═" * self.width + "╝\n")
-        output.append("32x64 LED Matrix Emulator | Ctrl+C to exit\n")
+        output.append(f"{self.height}x{self.width} LED Matrix Emulator | Ctrl+C to exit\n")
         
         print(''.join(output), end='', flush=True)
 
@@ -233,6 +240,9 @@ time.sleep_ms = lambda ms: time.sleep(ms / 1000)
 class Interstate75Module:
     DISPLAY_INTERSTATE75_64X32 = 0
     DISPLAY_INTERSTATE75_64X64 = 1
+    DISPLAY_INTERSTATE75_128X32 = 2
+    DISPLAY_INTERSTATE75_128X64 = 3
+    DISPLAY_INTERSTATE75_128X128 = 4
     Interstate75 = MockInterstate75
 
 sys.modules['interstate75'] = Interstate75Module()

@@ -46,7 +46,7 @@ In setup mode the matrix alternates between the hotspot name and `http://192.168
 Notes:
 - Your phone may warn "this network has no internet" when joining the hotspot - choose to stay connected.
 - The hotspot briefly drops clients while the radio hops to the target network's channel; the page rides this out, and the new IP is also shown on the LED matrix. The device also sets its hostname, so `http://flightdisplay.local/` may work depending on your OS and firmware mDNS support.
-- The same page is available at `/wifi` in normal operation (linked from the dashboard) for changing networks; a save there reboots the device, and if the new network fails it lands back in setup mode.
+- The same page is available at `/wifi` in normal operation (linked from the dashboard) for changing networks; a save there keeps the previous credentials as a rollback copy and reboots - if the new network can't connect, the device restores them and reboots back onto the old network (landing in setup mode only if those fail too).
 - Missing only the API key? The device connects to WiFi and parks on a "No API key" screen showing its IP - set the key via `/wifi`.
 
 ### Recovery mode
@@ -135,7 +135,7 @@ For reference, the device exposes:
 - `GET /wifi` - HTML WiFi setup page (served by `wifi_setup.py`, imported lazily; fully self-contained with no CDN assets since setup-hotspot clients have no internet). See [WiFi setup mode](#wifi-setup-mode).
 - `GET /wifi/scan` - JSON list of nearby networks (SSID, RSSI, secured), deduped and sorted by signal strength.
 - `GET /wifi/status` - JSON provisioning state (`mode`, `phase`, `ip`, `error`, ...); the setup page polls this while a join is being tested.
-- `POST /wifi/save` - JSON `{ssid, password, api_key}`: writes `secrets.py` without testing (blank `api_key` keeps the existing key; extra hand-added lines/comments in the file are preserved) and reboots. In setup mode there is also `POST /wifi/connect`, which tests the credentials live before saving - it isn't registered in normal mode since it would drop the current connection.
+- `POST /wifi/save` - JSON `{ssid, password, api_key}`: writes `secrets.py` without testing (blank `api_key` keeps the existing key; extra hand-added lines/comments in the file are preserved) and reboots. In normal mode the previous `secrets.py` is first copied to `secrets_backup.py`; if the new network can't connect after the reboot, the device restores it automatically. In setup mode there is also `POST /wifi/connect`, which tests the credentials live before saving - it isn't registered in normal mode since it would drop the current connection.
 - `POST /upload?path=<filename>.py` - writes the request body to that file. The `path` is restricted to safe Python module names (alphanumeric + underscores, `.py` extension) to prevent path traversal or accidental clobbering of system files.
 - `POST /reboot` - `machine.reset()` after flushing the response
 

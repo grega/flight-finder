@@ -405,10 +405,20 @@ summary[role="button"] { font-size: 0.875rem; }
       .then(function(r){
         if(!r.ok) return r.text().then(function(t){ throw new Error(t || ("HTTP " + r.status)); });
       })
-      .then(function(){ return fetch("/reboot", {method:"POST"}); })
+      // The reboot response can be cut off mid-flight by the reset itself;
+      // that's not a save failure, so swallow a rejection here
+      .then(function(){ return fetch("/reboot", {method:"POST"}).catch(function(){}); })
       .then(function(){
-        setStatus("Saved. Device rebooting…", "ok");
-        setTimeout(function(){ location.href = "/"; }, 6000);
+        setStatus("Saved. Device rebooting - returning to the dashboard when it's back…", "ok");
+        // A full reboot (WiFi join + splash screens) takes 15-20s; poll until
+        // the device answers rather than redirecting blind into an error page
+        setTimeout(function(){
+          var timer = setInterval(function(){
+            fetch("/status", {cache:"no-store"})
+              .then(function(r){ if(r.ok){ clearInterval(timer); location.href = "/"; } })
+              .catch(function(){ /* still rebooting */ });
+          }, 2000);
+        }, 5000);
       })
       .catch(function(e){ setStatus("Save failed: " + e.message, "err"); });
   }

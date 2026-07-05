@@ -110,8 +110,21 @@ def _is_safe_upload_target(name):
             return False
     return True
 
-# Tick value captured at boot for uptime reporting via /status
-_boot_ticks_ms = time.ticks_ms()
+# Uptime accumulator for /status and /history ages. ticks_ms wraps (~12 days)
+# and ticks_diff is only valid across ~6 days, so long uptimes can't be derived
+# from a boot tick. poll_webserver() advances this often enough to never miss a wrap.
+_uptime_s = 0
+_uptime_anchor_ticks_ms = time.ticks_ms()
+
+def _uptime_seconds():
+    global _uptime_s, _uptime_anchor_ticks_ms
+    delta_ms = time.ticks_diff(time.ticks_ms(), _uptime_anchor_ticks_ms)
+    if delta_ms >= 1000:
+        whole_s = delta_ms // 1000
+        _uptime_s += whole_s
+        # advance the anchor by whole seconds only, keeping the remainder
+        _uptime_anchor_ticks_ms = time.ticks_add(_uptime_anchor_ticks_ms, whole_s * 1000)
+    return _uptime_s
 
 # State tracked for /status. Updated by fetch_flight_data and display_flight_data
 _last_fetch_ticks_ms = None
@@ -198,7 +211,7 @@ def _collect_status():
     and dashboard.render_status_html (HTML)."""
     wlan = network.WLAN(network.STA_IF)
     connected = wlan.isconnected()
-    uptime_s = time.ticks_diff(time.ticks_ms(), _boot_ticks_ms) // 1000
+    uptime_s = _uptime_seconds()
     last_fetch_age_s = None
     if _last_fetch_ticks_ms is not None:
         last_fetch_age_s = time.ticks_diff(time.ticks_ms(), _last_fetch_ticks_ms) // 1000
@@ -228,7 +241,7 @@ def _handle_status(body, query):
 
 def _handle_history(body, query):
     # Recently-seen flights, newest first
-    now = time.ticks_ms()
+    now_s = _uptime_seconds()
     items = []
     for e in reversed(_flight_history):
         items.append({
@@ -238,7 +251,7 @@ def _handle_history(body, query):
             "aircraft_model": e["aircraft_model"],
             "distance_km": e["distance_km"],
             "registration": e["registration"],
-            "age_s": time.ticks_diff(now, e["seen_ticks_ms"]) // 1000,
+            "age_s": now_s - e["seen_uptime_s"],
         })
     return (200, "application/json", json.dumps({"flights": items}))
 
@@ -264,6 +277,7 @@ def register_routes():
 
 def poll_webserver():
     """Service one HTTP request if pending, then reboot if /reboot was hit."""
+    _uptime_seconds() # called from every loop, keeping the accumulator ahead of ticks_ms wrap
     webserver.poll()
     if _reboot_requested:
         time.sleep_ms(500)
@@ -332,6 +346,24 @@ def network_connect(ssid, password):
         time.sleep(5)
         return True
 
+# Rollback copy of secrets.py, written by wifi_setup before a normal-mode
+# /wifi/save overwrites working credentials with untested ones
+_SECRETS_BACKUP = "secrets_backup.py"
+
+def _restore_secrets_backup():
+    """Restore the pre-save secrets.py when freshly-saved creds can't get
+    online, instead of stranding the device in the setup hotspot."""
+    try:
+        os.stat(_SECRETS_BACKUP)
+    except OSError:
+        return False
+    try:
+        os.rename(_SECRETS_BACKUP, "secrets.py")
+        print("New WiFi creds failed; restored previous secrets.py")
+        return True
+    except OSError:
+        return False
+
 def _recover_after_fetch_failure(failures, ssid, password):
     """Self-heal path for repeated fetch failures: reconnect WiFi if it has
     dropped (nothing else in the main loop ever re-checks it), and reboot at
@@ -348,6 +380,29 @@ def _recover_after_fetch_failure(failures, ssid, password):
         print(f"WiFi is down (fetch failure #{failures}); reconnecting")
         network_connect(ssid, password)
 
+_NTP_RESYNC_S = 24 * 3600
+_ntp_synced = False
+_ntp_next_attempt_uptime_s = 0
+
+def _maybe_sync_ntp():
+    """Sync the RTC. Retries until the first success (a failed boot-time sync
+    previously left quiet time running on a bogus clock until the next reboot),
+    then refreshes daily to cover RTC drift."""
+    global _ntp_synced, _ntp_next_attempt_uptime_s
+    now_s = _uptime_seconds()
+    if now_s < _ntp_next_attempt_uptime_s:
+        return
+    try:
+        ntptime.settime()
+        _ntp_synced = True
+        _ntp_next_attempt_uptime_s = now_s + _NTP_RESYNC_S
+        t = time.localtime()
+        print("NTP synced: {:04d}-{:02d}-{:02d} {:02d}:{:02d} UTC".format(t[0], t[1], t[2], t[3], t[4]))
+    except Exception as e:
+        # Unsynced: retry soon, it gates quiet time. Synced: drift is slow, back off.
+        _ntp_next_attempt_uptime_s = now_s + (300 if not _ntp_synced else 3600)
+        print(f"NTP sync failed ({e}); will retry")
+
 def is_quiet_period():
     """Check if current time is within the quiet period, using UTC_OFFSET. Returns False outright when quiet time is disabled.
     """
@@ -355,6 +410,10 @@ def is_quiet_period():
         return False
     try:
         current_time = time.localtime()
+        if current_time[0] < 2024:
+            # RTC never set (NTP hasn't succeeded yet) - quiet windows would
+            # fire at bogus times, blanking the display mid-day
+            return False
         utc_hour = current_time[3]
         utc_minute = current_time[4]
 
@@ -517,7 +576,7 @@ def _record_flight_history(flight_number, origin_iata, destination_iata, aircraf
         "aircraft_model": aircraft_model,
         "distance_km": distance_km,
         "registration": registration,
-        "seen_ticks_ms": time.ticks_ms(),
+        "seen_uptime_s": _uptime_seconds(),
     })
     while len(_flight_history) > _FLIGHT_HISTORY_MAX:
         _flight_history.pop(0)
@@ -554,7 +613,7 @@ def display_flight_data(data):
     flight = data.get("flight", {})
     flight_number = data.get("flight", {}).get("number") or "N/A"
     aircraft_model = shorten_aircraft_model(flight.get("aircraft", {}).get("model") or "N/A")
-    distance_km = round_value(data.get("distance_km", {}))
+    distance_km = round_value(data.get("distance_km") or 0)
     distance = round_value(distance_km * distance_modifier)
     route = flight.get("route", {})
     origin = route.get("origin_iata") or "N/A"
@@ -852,8 +911,16 @@ def main():
         print(f"WiFi attempt {attempt + 1}/3 failed")
         time.sleep(5)
     if not connected:
+        if _restore_secrets_backup():
+            machine.reset() # boot again with the restored creds
         run_setup_mode("connect-failed", WIFI_SSID, WIFI_PASSWORD)
         return
+
+    # These creds work: commit them by discarding any rollback copy
+    try:
+        os.remove(_SECRETS_BACKUP)
+    except OSError:
+        pass
 
     # Start the webserver before anything that might block (eg. NTP DNS resolution)
     # This guarantees `./push.py` can always reach us to push fixes, even if the rest of startup hangs
@@ -883,14 +950,8 @@ def main():
             time.sleep_ms(100)
 
     print("BOOT: attempting NTP sync")
-    try:
-        ntptime.host = "pool.ntp.org"
-        ntptime.settime()
-        now = time.localtime()
-        print("Date: {}/{}/{}".format(now[1], now[2], now[0]))
-        print("Time (UTC): {:02d}:{:02d}".format(now[3], now[4]))
-    except:
-        print("Failed to sync time")
+    ntptime.host = "pool.ntp.org"
+    _maybe_sync_ntp()
 
     print("BOOT: entering display loop")
     display.set_pen(BLACK)
@@ -904,6 +965,7 @@ def main():
     
     consecutive_fetch_failures = 0
     while True:
+        _maybe_sync_ntp()
         if is_quiet_period():
             print("Quiet time")
             clear_display()
