@@ -191,7 +191,12 @@ def tick(now_ms):
 
 def _quote(value):
     value = value if value is not None else ""
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    value = value.replace("\\", "\\\\").replace('"', '\\"')
+    # A raw newline would end the quoted literal early and break secrets.py's
+    # import on every subsequent boot (WPA passphrases are printable-ASCII
+    # only, so nothing legitimate is lost)
+    value = value.replace("\r", " ").replace("\n", " ")
+    return '"' + value + '"'
 
 
 def write_secrets(ssid, password, api_key=""):
@@ -208,6 +213,14 @@ def write_secrets(ssid, password, api_key=""):
             content = f.read()
     except OSError:
         content = ""
+
+    if content:
+        try:
+            compile(content, SECRETS_PATH, "exec")
+        except Exception:
+            # The existing file doesn't parse; preserving its lines would keep
+            # the boot import broken forever, so rebuild from scratch
+            content = ""
 
     lines = content.split("\n") if content else []
     remaining = dict(values)

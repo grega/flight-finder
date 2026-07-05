@@ -6,7 +6,8 @@ fetches it into _device/config.py (gitignored), and pushes that local working
 copy back when you've edited it.
 
 Examples:
-    ./push.py code                  # push flight_display.py as main.py and reboot
+    ./push.py code                  # push flight_display.py + the main.py boot stub and reboot
+    ./push.py all                   # push every code module (not config.py/secrets.py) and reboot
     ./push.py file <filename>.py    # push any .py file and reboot
     ./push.py config fetch          # download device's config.py to _device/config.py
     ./push.py config push           # upload _device/config.py and reboot
@@ -28,6 +29,14 @@ LOCAL_CONFIG = os.path.join(DEVICE_DIR, "config.py")
 HOST_FILE = os.path.join(HERE, ".push_host")
 
 DISPLAY_SRC = os.path.join(HERE, "flight_display.py")
+MAIN_STUB_SRC = os.path.join(HERE, "main.py")
+
+# Everything `all` pushes. Deliberately excludes the per-device files:
+# config.py (round-tripped via `config fetch/push`) and secrets.py (managed
+# on-device via /wifi). main.py goes last so an aborted run can't leave a
+# device whose boot stub imports modules newer than the ones on flash.
+ALL_CODE_FILES = ("webserver.py", "wifi_setup.py", "dashboard.py",
+                  "config_editor.py", "flight_display.py", "main.py")
 
 
 def resolve_host(cli_host):
@@ -87,7 +96,16 @@ def _reboot(host):
 
 def cmd_code(args):
     host = resolve_host(args.host)
-    _upload_file(host, DISPLAY_SRC, "main.py")
+    # main.py is a thin boot/recovery stub that imports flight_display.
+    _upload_file(host, DISPLAY_SRC, "flight_display.py")
+    _upload_file(host, MAIN_STUB_SRC, "main.py")
+    _reboot(host)
+
+
+def cmd_all(args):
+    host = resolve_host(args.host)
+    for name in ALL_CODE_FILES:
+        _upload_file(host, os.path.join(HERE, name), name)
     _reboot(host)
 
 
@@ -132,7 +150,8 @@ def main():
     parser.add_argument("--host", help="IP or hostname of the I75 (overrides I75_HOST and .push_host)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("code", help="push flight_display.py as main.py and reboot").set_defaults(func=cmd_code)
+    sub.add_parser("code", help="push flight_display.py and the main.py boot stub, then reboot").set_defaults(func=cmd_code)
+    sub.add_parser("all", help="push every code module (not config.py/secrets.py) and reboot").set_defaults(func=cmd_all)
     file_parser = sub.add_parser("file", help="push any local .py file (eg. webserver.py, dashboard.py) under its same name and reboot")
     file_parser.add_argument("path", help="path to local .py file (relative to this script, or absolute)")
     file_parser.set_defaults(func=cmd_file)

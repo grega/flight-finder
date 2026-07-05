@@ -4,6 +4,7 @@ import json
 import machine
 import network
 import ntptime
+import os
 import time
 import urequests
 from interstate75 import Interstate75
@@ -83,6 +84,11 @@ def _coerce_refresh_interval(raw_value):
 # Enforce minimum value
 REFRESH_INTERVAL = _coerce_refresh_interval(REFRESH_INTERVAL)
 
+# Cap each fetch
+_REQUEST_TIMEOUT_S = 15
+# After this many consecutive fetch failures, reboot. ~10 minutes at the default 60s interval.
+_MAX_CONSECUTIVE_FETCH_FAILURES = 10
+
 def clear_display():
     """Clear the display / turn it off"""
     display.set_pen(BLACK)
@@ -125,7 +131,6 @@ def _handle_get_config(body, query):
         return (500, "text/plain", f"Cannot read config.py: {e}")
 
 def _handle_config_editor(body, query):
-    # Imported lazily so its page string only costs heap once the editor is used (and a reboot after saving clears it again)
     try:
         import config_editor
     except ImportError:
@@ -165,9 +170,20 @@ def _handle_upload(body, query):
     if not _is_safe_upload_target(target):
         return (400, "text/plain",
                 f"path must be a simple .py filename (eg. main.py, config.py, dashboard.py), got {target!r}")
+    if target == "config.py":
+        # Reject a save that would break `from config import *` on the next boot
+        try:
+            compile(body.decode(), target, "exec")
+        except MemoryError:
+            pass # heap too tight to verify; accept rather than block updates
+        except Exception as e:
+            return (400, "text/plain", f"Rejected: config.py does not compile: {e}")
     try:
-        with open(target, "wb") as f:
+        # Write to a temp file and rename
+        tmp = target + ".tmp"
+        with open(tmp, "wb") as f:
             f.write(body)
+        os.rename(tmp, target)
     except OSError as e:
         return (500, "text/plain", f"Write failed: {e}")
     return (200, "text/plain", f"Wrote {len(body)} bytes to {target}")
@@ -316,6 +332,22 @@ def network_connect(ssid, password):
         time.sleep(5)
         return True
 
+def _recover_after_fetch_failure(failures, ssid, password):
+    """Self-heal path for repeated fetch failures: reconnect WiFi if it has
+    dropped (nothing else in the main loop ever re-checks it), and reboot at
+    the threshold so the boot path can rebuild from scratch."""
+    if failures >= _MAX_CONSECUTIVE_FETCH_FAILURES:
+        print(f"{failures} consecutive fetch failures; rebooting to recover")
+        time.sleep_ms(500)
+        machine.reset()
+    try:
+        connected = network.WLAN(network.STA_IF).isconnected()
+    except Exception:
+        connected = False
+    if not connected:
+        print(f"WiFi is down (fetch failure #{failures}); reconnecting")
+        network_connect(ssid, password)
+
 def is_quiet_period():
     """Check if current time is within the quiet period, using UTC_OFFSET. Returns False outright when quiet time is disabled.
     """
@@ -341,6 +373,20 @@ def is_quiet_period():
     except:
         return False
 
+# Some older firmwares bundle a urequests without the timeout kwarg; detect
+# once and degrade instead of failing every fetch
+_urequests_supports_timeout = True
+
+def _http_get(url, headers):
+    global _urequests_supports_timeout
+    if _urequests_supports_timeout:
+        try:
+            return urequests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT_S)
+        except TypeError:
+            _urequests_supports_timeout = False
+            print("urequests lacks timeout support; a dead connection may hang until reboot")
+    return urequests.get(url, headers=headers)
+
 def fetch_flight_data(api_key):
     """Fetch closest flight data from the API"""
     global _last_fetch_ticks_ms, _last_fetch_ok, _last_fetch_error
@@ -357,7 +403,7 @@ def fetch_flight_data(api_key):
 
         print(f"Fetching data from: {url}")
 
-        response = urequests.get(url, headers=headers)
+        response = _http_get(url, headers)
 
         if response.status_code == 200:
             data = response.json()
@@ -677,7 +723,7 @@ def update_dynamic_display(elapsed_ms, cycle_info, state):
         state["line3_offset"] = new_line3_offset
         draw_scrolling_line(23, [(cycle_info["model_text"], MAGENTA)], new_line3_offset)
 
-_AP_ALTERNATE_MS = 4000 # ms per screen in the setup-idle two-screen rotation
+_AP_ALTERNATE_MS = 4000
 
 def _setup_screen_key(ws, now_ms):
     """Identify the setup screen to show, so the loop only redraws on change."""
@@ -734,7 +780,7 @@ def _draw_setup_screen(ws, screen, ap_ip, ap_name):
 def run_setup_mode(reason, saved_ssid, saved_password):
     """AP-mode provisioning: serve /wifi on an open hotspot until working creds
     are saved. Never returns - every exit path is a machine.reset()."""
-    import wifi_setup # lazy: normal boots never pay for its page string
+    import wifi_setup
 
     print(f"SETUP: entering setup mode ({reason})")
     wifi_setup.begin(reason, saved_ssid, saved_password)
@@ -743,7 +789,7 @@ def run_setup_mode(reason, saved_ssid, saved_password):
     print(f"SETUP: join '{ap_name}' then open http://{ap_ip}/")
 
     wifi_setup.register_routes(True)
-    webserver.route("GET", "/", wifi_setup.handle_page) # bare AP IP lands on the setup page
+    webserver.route("GET", "/", wifi_setup.handle_page) # bare AP IP on the setup page
     # /upload, /logs and /reboot stay available so push.py can still fix a device stuck in setup mode
     webserver.route("POST", "/upload", _handle_upload)
     webserver.route("GET",  "/logs",   _handle_logs)
@@ -787,12 +833,13 @@ def main():
         WIFI_SSID = getattr(_secrets, "WIFI_SSID", "")
         WIFI_PASSWORD = getattr(_secrets, "WIFI_PASSWORD", "")
         FLIGHT_FINDER_API_KEY = getattr(_secrets, "FLIGHT_FINDER_API_KEY", "")
-    except ImportError:
+    except Exception as e:
+        print(f"secrets.py unusable ({e}); treating as no credentials")
         WIFI_SSID, WIFI_PASSWORD, FLIGHT_FINDER_API_KEY = "", "", ""
 
     if not WIFI_SSID:
         # No usable secrets.py - provision over the setup hotspot instead of dead-ending.
-        # An empty WIFI_PASSWORD is allowed through (open networks).
+        # An empty WIFI_PASSWORD is allowed
         run_setup_mode("no-creds", None, None)
         return
 
@@ -808,7 +855,7 @@ def main():
         run_setup_mode("connect-failed", WIFI_SSID, WIFI_PASSWORD)
         return
 
-    # Start the webserver BEFORE anything that might block (eg. NTP DNS resolution)
+    # Start the webserver before anything that might block (eg. NTP DNS resolution)
     # This guarantees `./push.py` can always reach us to push fixes, even if the rest of startup hangs
     print("BOOT: registering routes")
     register_routes()
@@ -820,7 +867,7 @@ def main():
 
     if not FLIGHT_FINDER_API_KEY:
         # WiFi works but there's no API key yet: park on /wifi until one is saved.
-        # A successful save sets the reboot flag, so poll_webserver() restarts us.
+        # A successful save sets the reboot flag, so poll_webserver() restarts the device
         ip = network.WLAN(network.STA_IF).ifconfig()[0]
         print(f"BOOT: no API key - set it via http://{ip}/wifi")
         display.set_pen(BLACK)
@@ -855,15 +902,25 @@ def main():
     i75.update()
     time.sleep(3)
     
+    consecutive_fetch_failures = 0
     while True:
         if is_quiet_period():
             print("Quiet time")
             clear_display()
-            time.sleep(300)
+            # The webserver only runs when polled, so sleep in 100ms periods
+            wake_at = time.ticks_add(time.ticks_ms(), 300 * 1000)
+            while time.ticks_diff(wake_at, time.ticks_ms()) > 0:
+                poll_webserver()
+                time.sleep_ms(100)
             continue
 
         try:
             flight_data = fetch_flight_data(FLIGHT_FINDER_API_KEY)
+            if flight_data is None:
+                consecutive_fetch_failures += 1
+                _recover_after_fetch_failure(consecutive_fetch_failures, WIFI_SSID, WIFI_PASSWORD)
+            else:
+                consecutive_fetch_failures = 0
             print(f"Displaying flight data for {REFRESH_INTERVAL} seconds...")
             cycle_info = display_flight_data(flight_data)
 

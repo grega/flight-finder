@@ -35,7 +35,10 @@ class MockNetwork:
         def connect(self, ssid, password):
             self._ssid = ssid
             self._password = password
-            
+
+        def isconnected(self):
+            return self._ssid is not None
+
         def status(self):
             return 3  # Connected
             
@@ -62,7 +65,7 @@ class MockUrequests:
             pass
     
     @staticmethod
-    def get(url, headers=None):
+    def get(url, headers=None, timeout=None):
       test_data_file = os.path.join(os.path.dirname(__file__), 'test_flight_data.json')
       
       try:

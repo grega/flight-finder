@@ -13,7 +13,7 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
 Once connected to the I75 device:
-  - Copy `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, `config_editor.py`, and `wifi_setup.py` onto the device (optionally rename `flight_display.py` to `main.py` to run on boot)
+  - Copy `main.py`, `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, `config_editor.py`, and `wifi_setup.py` onto the device (`main.py` is a thin boot stub that runs `flight_display.py` and falls back to a recovery webserver if it crashes - see [Recovery mode](#recovery-mode))
   - Edit `config.py`:
     - Set `API_URL` to the deployed Flight Finder Service
     - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
@@ -31,7 +31,7 @@ Once connected to the I75 device:
       FLIGHT_FINDER_API_KEY = ""
       ```
     - **Option B - use the setup hotspot**: skip `secrets.py` entirely. On first boot the device starts an open WiFi hotspot named `FlightDisplay-XXXX` (shown on the LED matrix). Join it and open `http://192.168.4.1` - the setup page lets you pick a network (with scan), enter the password and API key, and it tests the credentials while the hotspot stays up, then shows the device's new LAN IP before rebooting. See [WiFi setup mode](#wifi-setup-mode) below.
-  - Run the `flight_display.py` script to start displaying flights
+  - Power-cycle the device (or run `main.py`) to start displaying flights
 
 ### WiFi setup mode
 
@@ -48,6 +48,16 @@ Notes:
 - The hotspot briefly drops clients while the radio hops to the target network's channel; the page rides this out, and the new IP is also shown on the LED matrix. The device also sets its hostname, so `http://flightdisplay.local/` may work depending on your OS and firmware mDNS support.
 - The same page is available at `/wifi` in normal operation (linked from the dashboard) for changing networks; a save there reboots the device, and if the new network fails it lands back in setup mode.
 - Missing only the API key? The device connects to WiFi and parks on a "No API key" screen showing its IP - set the key via `/wifi`.
+
+### Recovery mode
+
+`main.py` is a boot stub: it runs `flight_display.main()`, and if that crashes (a broken `config.py`, a bad push) it drops into a minimal recovery webserver. In recovery the device:
+
+- Joins WiFi with the saved credentials where possible, otherwise starts the `FlightDisplay-XXXX` hotspot (with the `/wifi` provisioning page available)
+- Shows `RECOVERY` plus its IP (or the hotspot name) on the matrix
+- Serves the crash traceback at `/`, and keeps `/upload` + `/reboot` working, so `./push.py` can be used
+
+Related guard rails: `/upload` writes files atomically (temp file + rename, so a failed upload doesn't leave a corrupted file) and compile-checks `config.py` uploads on the device, rejecting a save that wouldn't import on the next boot. The main loop also self-heals, it reconnects WiFi if the connection drops and reboots after 10 consecutive failed API fetches.
 
 ### Display panel configuration
 
@@ -96,7 +106,8 @@ echo 192.168.1.42 > .push_host   # or: export I75_HOST=192.168.1.42
 Then:
 
 ```bash
-./push.py code                  # push flight_display.py as main.py and reboot
+./push.py code                  # push flight_display.py + the main.py boot stub and reboot
+./push.py all                   # push every code module (not config.py/secrets.py) and reboot
 ./push.py file dashboard.py     # push any other local .py file under its same name and reboot
 ./push.py config fetch          # download device's config.py to _device/config.py
 ./push.py config push           # upload _device/config.py and reboot
