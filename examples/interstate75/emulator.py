@@ -12,7 +12,9 @@ from typing import Optional, Dict, Any
 
 # mock Micropython modules that don't exist in regular Python
 class MockMachine:
-    pass
+    @staticmethod
+    def unique_id():
+        return b"\xde\xad\xbe\xef\x00\x01\x02\x03"
 
 class MockNetwork:
     STA_IF = 0

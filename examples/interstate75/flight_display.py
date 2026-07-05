@@ -15,6 +15,11 @@ from config import *
 import webserver
 import dashboard
 
+try:
+    from binascii import hexlify
+except ImportError:
+    from ubinascii import hexlify
+
 i75 = Interstate75(display=DISPLAY_TYPE, color_order=COLOR_ORDER)
 display = i75.display
 
@@ -37,6 +42,13 @@ display.set_font("bitmap8")
 # Code version, reported in the API User-Agent and on /status. Bump this on
 # each `push.py all` deploy so a fleet view can tell which devices are current.
 VERSION = "1.0.0"
+
+# Stable per-board id (full unique_id hex, ~16 chars) sent as X-Device-Id so the
+# API can de-dupe/identify devices even if two share the default USER_AGENT_ID.
+try:
+    DEVICE_ID = hexlify(machine.unique_id()).decode()
+except Exception:
+    DEVICE_ID = "unknown"
 
 # Last crash persisted here so it survives the reboot that usually follows one
 # (the /logs RAM ring buffer does not). Surfaced on /status; main.py writes it
@@ -260,6 +272,7 @@ def _collect_status():
         last_fetch_age_s = time.ticks_diff(time.ticks_ms(), _last_fetch_ticks_ms) // 1000
     return {
         "version": VERSION,
+        "device_id": DEVICE_ID,
         "uptime_s": uptime_s,
         "free_heap_bytes": gc.mem_free(),
         "alloc_heap_bytes": gc.mem_alloc(),
@@ -512,6 +525,7 @@ def fetch_flight_data(api_key):
 
         headers = {
             "X-API-Key": api_key,
+            "X-Device-Id": DEVICE_ID,
             "User-Agent": f"I75 Matrix Display/{VERSION} {USER_AGENT_ID}"
         }
 
