@@ -218,7 +218,7 @@ The fleet endpoints are guarded by a separate `ADMIN_TOKEN` env var (independent
 
 #### `GET /fleet`
 
-Human-readable HTML table of known devices (ID, label, version, last-seen with an offline flag, household IP, request count). In a browser it prompts for HTTP Basic Auth - enter the admin token as the password.
+Human-readable HTML table of known devices (ID, label, version, last-seen with an offline flag, IP, request count). In a browser it prompts for HTTP Basic Auth - enter the admin token as the password.
 
 #### `GET /fleet.json`
 

@@ -350,7 +350,7 @@ def _render_fleet_html(devices):
         f"<p class=sub>{len(devices)} device(s) &middot; auto-refreshes every 30s</p>"
         "<table><thead><tr>"
         "<th>Device ID</th><th>Label</th><th>Version</th><th>Last seen</th>"
-        "<th>Household IP</th><th>Requests</th><th>First seen</th>"
+        "<th>IP</th><th>Requests</th><th>First seen</th>"
         "</tr></thead><tbody>" + body + "</tbody></table></main></body></html>"
     )
 
