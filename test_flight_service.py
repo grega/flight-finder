@@ -12,8 +12,8 @@ def disable_api_key(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_fleet_db(tmp_path, monkeypatch):
-    """Point the fleet store at a fresh per-test SQLite file. Every flight
-    request records a heartbeat, so without this the tests would share (and
+    """Point the fleet store at a fresh per-test SQLite file. Check-ins record
+    heartbeats/commands/logs, so without this the tests would share (and
     pollute) one database."""
     monkeypatch.setattr("fleet_store.DB_PATH", str(tmp_path / "fleet.db"))
     fleet_store.init_db()
@@ -356,42 +356,114 @@ def test_fleet_store_orders_by_last_seen():
     assert ids[0] == "new"  # most-recently-seen first
 
 
-# ---- Heartbeat recording via the flight endpoints -------------------------
+# ---- Device check-in (heartbeat + control block) --------------------------
 
 @patch("flight_service.fr_api")
-def test_closest_flight_records_heartbeat(mock_api, client):
-    """An authenticated flight poll records the calling device, parsing version
-    and label out of the User-Agent."""
-    mock_api.get_flights.return_value = []  # no flights - still counts as a poll
-    response = client.get(
+def test_flight_endpoints_no_longer_record_heartbeat(mock_api, client):
+    """Heartbeat recording moved to /device/checkin; flight polls are pure
+    flight data now and must not create device rows."""
+    mock_api.get_flights.return_value = []
+    client.get(
         "/closest-flight?lat=51.5&lon=-0.26&radius=10",
-        headers={
-            "X-Device-Id": "abc123def456",
-            "User-Agent": "I75 Matrix Display/2.3.4 Greg Kitchen",
-        },
+        headers={"X-Device-Id": "abc", "User-Agent": "I75 Matrix Display/2.3.4 Kitchen"},
     )
-    assert response.status_code == 200
+    assert fleet_store.list_devices() == []
+
+
+def test_checkin_records_heartbeat_and_returns_control(client):
+    """A check-in records the device (from the JSON body, incl. lan_ip) and
+    returns a control block."""
+    r = client.post("/device/checkin", json={
+        "device_id": "abc123def456", "version": "2.3.4",
+        "label": "Greg Kitchen", "lan_ip": "192.168.1.42",
+    })
+    assert r.status_code == 200
+    control = r.get_json()
+    assert control["update_available"] is False and control["target_version"] is None
     devices = fleet_store.list_devices()
     assert len(devices) == 1
     d = devices[0]
     assert d["device_id"] == "abc123def456"
-    assert d["version"] == "2.3.4"
-    assert d["label"] == "Greg Kitchen"
+    assert d["version"] == "2.3.4" and d["label"] == "Greg Kitchen"
+    assert d["lan_ip"] == "192.168.1.42"
 
 
-@patch("flight_service.fr_api")
-def test_heartbeat_falls_back_when_no_device_id(mock_api, client):
-    """Without X-Device-Id the label (or IP) becomes the key, so pre-update
-    devices still appear."""
-    mock_api.get_flights.return_value = []
-    client.get(
-        "/closest-flight?lat=51.5&lon=-0.26&radius=10",
-        headers={"User-Agent": "I75 Matrix Display/1.0.0 Legacy Device"},
-    )
+def test_checkin_falls_back_to_label_or_ip_without_device_id(client):
+    r = client.post("/device/checkin", json={"label": "Legacy", "version": "1.0.0"})
+    assert r.status_code == 200
     devices = fleet_store.list_devices()
-    assert len(devices) == 1
-    assert devices[0]["device_id"] == "Legacy Device"
-    assert devices[0]["version"] == "1.0.0"
+    assert len(devices) == 1 and devices[0]["device_id"] == "Legacy"
+
+
+def test_command_delivered_then_acked(client, monkeypatch):
+    """A queued command is delivered on the next check-in, redelivered until
+    acked, then stops once the device acks it."""
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0"})
+    r = client.post("/fleet/command", headers={"X-Admin-Token": "sekret"},
+                    json={"device_id": "dev1", "action": "reboot"})
+    cid = r.get_json()["id"]
+
+    ctl = client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0"}).get_json()
+    assert ctl["command"] == {"id": cid, "action": "reboot"}
+    # redelivers while un-acked
+    ctl = client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0"}).get_json()
+    assert ctl["command"]["id"] == cid
+    # ack clears it
+    client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0", "ack": [cid]})
+    ctl = client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0"}).get_json()
+    assert "command" not in ctl
+
+
+def test_command_rejects_unknown_action(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    r = client.post("/fleet/command", headers={"X-Admin-Token": "sekret"},
+                    json={"device_id": "dev1", "action": "explode"})
+    assert r.status_code == 400
+
+
+def test_command_requires_admin(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    assert client.post("/fleet/command", json={"device_id": "d", "action": "reboot"}).status_code == 401
+
+
+def test_send_logs_round_trip(client, monkeypatch):
+    """Uploaded logs are stored (latest set only) and retrievable via /fleet/logs."""
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    assert client.get("/fleet/logs?device_id=dev1",
+                      headers={"X-Admin-Token": "sekret"}).status_code == 404
+    client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0", "logs": "BOOT ok\nfetch ok"})
+    r = client.get("/fleet/logs?device_id=dev1", headers={"X-Admin-Token": "sekret"})
+    assert r.status_code == 200 and "fetch ok" in r.get_data(as_text=True)
+    # a newer upload overwrites
+    client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0", "logs": "second set"})
+    body = client.get("/fleet/logs?device_id=dev1", headers={"X-Admin-Token": "sekret"}).get_data(as_text=True)
+    assert "second set" in body and "fetch ok" not in body
+
+
+def test_checkin_store_failure_returns_503(client, monkeypatch):
+    """A store failure must not fake a 200: the device clears its pending acks
+    only on success, so a faked 200 would drop acks the server never processed
+    and the command would re-execute on redelivery."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("db locked")
+    monkeypatch.setattr("fleet_store.record", boom)
+    r = client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0"})
+    assert r.status_code == 503
+
+
+def test_checkin_canary_gating_then_promote(client, monkeypatch):
+    """A published canary_version advertises only to the canary; a promote
+    (fleet_version) then widens it to the rest."""
+    monkeypatch.setattr("flight_service.CANARY_DEVICE_ID", "canary01")
+    fleet_store.set_meta("canary_version", "1.1.0")
+    canary = client.post("/device/checkin", json={"device_id": "canary01", "version": "1.0.0"}).get_json()
+    other = client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0"}).get_json()
+    assert canary["update_available"] is True and canary["target_version"] == "1.1.0"
+    assert other["update_available"] is False  # fleet_version unset -> untouched
+    fleet_store.set_meta("fleet_version", "1.1.0")  # promote
+    other = client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0"}).get_json()
+    assert other["update_available"] is True and other["target_version"] == "1.1.0"
 
 
 # ---- Fleet endpoints + admin auth -----------------------------------------
@@ -408,14 +480,9 @@ def test_fleet_json_401_with_wrong_token(client, monkeypatch):
     assert response.status_code == 401
 
 
-@patch("flight_service.fr_api")
-def test_fleet_json_200_with_valid_token(mock_api, client, monkeypatch):
+def test_fleet_json_200_with_valid_token(client, monkeypatch):
     monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
-    mock_api.get_flights.return_value = []
-    client.get(
-        "/closest-flight?lat=51.5&lon=-0.26&radius=10",
-        headers={"X-Device-Id": "dev1", "User-Agent": "I75 Matrix Display/1.0.0 Kitchen"},
-    )
+    client.post("/device/checkin", json={"device_id": "dev1", "version": "1.0.0", "label": "Kitchen"})
     response = client.get("/fleet.json", headers={"X-Admin-Token": "sekret"})
     assert response.status_code == 200
     data = response.get_json()

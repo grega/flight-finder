@@ -8,9 +8,9 @@ from FlightRadarAPI import FlightRadar24API
 from math import radians, cos
 from datetime import datetime, timezone
 from html import escape
+from urllib.parse import quote
 import airportsdata
 import os
-import re
 
 import fleet_store
 
@@ -23,6 +23,9 @@ API_KEY = os.getenv("SERVICE_API_KEY", None)
 # Generic admin token guarding the fleet view (and any future admin endpoints).
 # Deliberately separate from SERVICE_API_KEY so it can be rotated independently.
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", None)
+# The one device that receives a newly-published build first (canary). A publish
+# reaches only this device; a manual promote then widens it to the whole fleet.
+CANARY_DEVICE_ID = os.getenv("CANARY_DEVICE_ID", None)
 
 fleet_store.init_db()
 
@@ -57,27 +60,24 @@ def validate_api_key():
     return provided_key == API_KEY
 
 
-# User-Agent the devices send, eg. "I75 Matrix Display/1.0.0 Flight Tracker 1".
-# Group 1 is the code version, group 2 the human label (may contain spaces).
-_DEVICE_UA_RE = re.compile(r"I75 Matrix Display/(\S+)\s+(.+)")
+def control_for(device_id, version):
+    """The device-management control block returned from a check-in: the OTA
+    target version (canary-aware) and the next queued command, if any.
 
-
-def record_heartbeat():
-    """Log the calling device from an authenticated flight poll. Best-effort:
-    a store hiccup must never break the flight response the device needs."""
-    try:
-        ua = request.headers.get('User-Agent', '')
-        match = _DEVICE_UA_RE.match(ua)
-        version = match.group(1) if match else None
-        label = match.group(2).strip() if match else (ua or None)
-        # access_route[0] is the client from X-Forwarded-For (behind Dokku's
-        # nginx remote_addr is just the proxy). This is the household's public
-        # egress IP, not the device's LAN IP.
-        ip = request.access_route[0] if request.access_route else request.remote_addr
-        device_id = request.headers.get('X-Device-Id') or label or ip
-        fleet_store.record(device_id, label, version, ip)
-    except Exception as e:
-        app.logger.warning("heartbeat record failed: %s", e)
+    A publish sets `canary_version` (only the canary device targets it); a
+    promote copies it into `fleet_version` (what every other device targets).
+    So an un-promoted build can never advertise to a non-canary device."""
+    is_canary = CANARY_DEVICE_ID is not None and device_id == CANARY_DEVICE_ID
+    target = fleet_store.get_meta("canary_version") if is_canary else fleet_store.get_meta("fleet_version")
+    control = {
+        "target_version": target,
+        "update_available": bool(target) and version != target,
+        "manifest_url": "/ota/manifest",
+    }
+    command = fleet_store.pending_command(device_id)
+    if command is not None:
+        control["command"] = command
+    return control
 
 
 def require_admin():
@@ -181,7 +181,6 @@ def get_closest_flight():
     """Find the closest flight to given coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
-    record_heartbeat()
 
     lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:
@@ -241,7 +240,6 @@ def get_flights_in_radius():
     """Find all flights within a given radius of coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
-    record_heartbeat()
 
     lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:
@@ -280,6 +278,43 @@ def get_flights_in_radius():
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
+@app.route('/device/checkin', methods=['POST'])
+def device_checkin():
+    """Device-management check-in, separate from the flight endpoints so the
+    flight contract stays purely about flights. Records the heartbeat, stashes
+    any uploaded logs, processes command acks, and returns the control block.
+    The device calls this on its own ~5 min cadence."""
+    if not validate_api_key():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    # access_route[0] is the client from X-Forwarded-For (behind Dokku's nginx
+    # remote_addr is just the proxy) - the household's public egress IP. The
+    # device also reports its own lan_ip in the body.
+    ip = request.access_route[0] if request.access_route else request.remote_addr
+    device_id = body.get("device_id") or body.get("label") or ip
+    version = body.get("version")
+
+    try:
+        fleet_store.record(device_id, body.get("label"), version, ip,
+                           body.get("lan_ip"), body.get("ota_failed"))
+        logs = body.get("logs")
+        if logs is not None:
+            fleet_store.store_logs(device_id, logs)
+        ack = body.get("ack") or []
+        if ack:
+            fleet_store.ack_commands(device_id, ack)
+        control = control_for(device_id, version)
+    except Exception as e:
+        app.logger.warning("checkin store failed: %s", e)
+        # 503, not a faked 200: the device only clears its pending acks/logs on
+        # a 200, so pretending success here would drop acks the server never
+        # processed - and the un-acked command would then re-execute (eg. a
+        # second reboot) when redelivered. A 503 makes the device retry intact.
+        return jsonify({"error": "temporarily unavailable"}), 503
+    return jsonify(control), 200
+
+
 def _relative_age(last_seen_iso):
     """(seconds_ago, human_string) for an ISO timestamp, or (None, 'never')."""
     if not last_seen_iso:
@@ -300,12 +335,16 @@ def _relative_age(last_seen_iso):
     return secs, f"{secs // 86400}d ago"
 
 
-# A device is flagged offline once it misses several polls (default interval 60s).
-_OFFLINE_AFTER_S = 300
+# A device is flagged offline once it misses ~3 check-ins (the device checks in
+# every 300s, plus display-cycle rounding), so a healthy device never flaps.
+_OFFLINE_AFTER_S = 900
 
 
-def _render_fleet_html(devices):
-    """Self-contained HTML fleet table (no external assets), auto-refreshing."""
+def _render_fleet_html(devices, canary_id=None, logs_index=None):
+    """Self-contained HTML fleet table (no external assets), auto-refreshing,
+    with per-device management actions. All state-changing buttons confirm first
+    (accidental-click guard) and POST to /fleet/command."""
+    logs_index = logs_index or {}
     if devices:
         rows = []
         for d in devices:
@@ -313,20 +352,42 @@ def _render_fleet_html(devices):
             offline = secs is None or secs > _OFFLINE_AFTER_S
             seen_cell = (f'<span class="{"offline" if offline else "online"}">'
                          f'{"●" if not offline else "○"} {escape(human)}</span>')
+            did = str(d.get("device_id") or "")
+            did_attr = escape(did)
+            label = str(d.get("label") or "")
+            label_attr = escape(label)
+            badge = " <span class=badge>canary</span>" if canary_id and did == canary_id else ""
+            ota_failed = d.get("ota_failed")
+            warn = (f' <span class=warn title="auto-rolled-back from a failed update">'
+                    f'⚠ {escape(str(ota_failed))}</span>') if ota_failed else ""
+            lan = d.get("lan_ip")
+            lan_cell = (f'<a href="http://{escape(str(lan))}/" target=_blank rel=noopener>'
+                        f'{escape(str(lan))}</a>') if lan else ""
+            logs_at = logs_index.get(did)
+            logs_link = (f'<a class=logs-link href="/fleet/logs?device_id={quote(did)}" '
+                         f'target=_blank rel=noopener title="received {escape(str(logs_at))}">logs</a>'
+                         ) if logs_at else ""
+            actions = (
+                f'<button class=act data-act="reboot" data-id="{did_attr}" data-label="{label_attr}">Reboot</button>'
+                f'<button class=act data-act="enter-setup" data-id="{did_attr}" data-label="{label_attr}">Setup</button>'
+                f'<button class=act data-act="send-logs" data-id="{did_attr}" data-label="{label_attr}">Req&nbsp;logs</button>'
+                f"{logs_link}"
+            )
             rows.append(
                 "<tr>"
-                f"<td class=mono>{escape(str(d.get('device_id') or ''))}</td>"
-                f"<td>{escape(str(d.get('label') or ''))}</td>"
+                f"<td class=mono>{escape(did)}{badge}{warn}</td>"
+                f"<td>{escape(label)}</td>"
                 f"<td class=mono>{escape(str(d.get('version') or '?'))}</td>"
                 f"<td>{seen_cell}</td>"
                 f"<td class=mono>{escape(str(d.get('last_ip') or ''))}</td>"
+                f"<td class=mono>{lan_cell}</td>"
                 f"<td class=num>{escape(str(d.get('request_count') or 0))}</td>"
-                f"<td class=mono>{escape(str(d.get('first_seen') or ''))}</td>"
+                f"<td class=actions>{actions}</td>"
                 "</tr>"
             )
         body = "".join(rows)
     else:
-        body = ('<tr><td colspan=7 class=empty>No devices have checked in yet.</td></tr>')
+        body = "<tr><td colspan=8 class=empty>No devices have checked in yet.</td></tr>"
 
     return (
         "<!DOCTYPE html><html lang=en><head><meta charset=utf-8>"
@@ -334,25 +395,88 @@ def _render_fleet_html(devices):
         "<meta http-equiv=refresh content=30>"
         "<title>Flight Finder fleet</title><style>"
         "body{font-family:system-ui,sans-serif;margin:0;background:#f5f6f8;color:#1c1e21}"
-        "main{max-width:60rem;margin:0 auto;padding:1.2rem}"
+        "main{max-width:72rem;margin:0 auto;padding:1.2rem}"
         "h1{font-size:1.3rem;margin:0 0 0.2rem}"
         ".sub{color:#666;font-size:0.85rem;margin:0 0 1rem}"
+        "#msg{min-height:1.3em;margin:0 0 0.8rem;font-size:0.85rem}"
+        "#msg.ok{color:#157347}#msg.err{color:#c62828}"
+        ".scroll{overflow-x:auto}"
         "table{width:100%;border-collapse:collapse;background:#fff;"
         "border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)}"
-        "th,td{text-align:left;padding:0.5rem 0.7rem;border-bottom:1px solid #eceef1;font-size:0.875rem}"
+        "th,td{text-align:left;padding:0.5rem 0.7rem;border-bottom:1px solid #eceef1;font-size:0.875rem;white-space:nowrap}"
         "th{background:#fafbfc;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.03em;color:#666}"
         ".mono{font-family:ui-monospace,Menlo,monospace;font-size:0.8rem}"
         ".num{text-align:right}"
         ".online{color:#157347;font-weight:600}.offline{color:#c62828;font-weight:600}"
         ".empty{text-align:center;color:#888;padding:1.5rem}"
+        ".badge{background:#1667c1;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.03em}"
+        ".warn{color:#b45309;font-size:0.72rem}"
+        ".actions{white-space:nowrap}"
+        "button.act{margin-right:0.3rem;padding:0.25rem 0.5rem;font-size:0.75rem;border:1px solid #8a919c;"
+        "border-radius:5px;background:#fff;cursor:pointer}"
+        "button.act:disabled{opacity:0.5;cursor:default}"
+        "td.actions a{font-size:0.75rem}"
         "</style></head><body><main>"
         "<h1>Flight Finder fleet</h1>"
         f"<p class=sub>{len(devices)} device(s) &middot; auto-refreshes every 30s</p>"
-        "<table><thead><tr>"
+        "<div id=msg></div>"
+        "<div class=scroll><table><thead><tr>"
         "<th>Device ID</th><th>Label</th><th>Version</th><th>Last seen</th>"
-        "<th>IP</th><th>Requests</th><th>First seen</th>"
-        "</tr></thead><tbody>" + body + "</tbody></table></main></body></html>"
+        "<th>Household IP</th><th>LAN IP</th><th>Requests</th><th>Actions</th>"
+        "</tr></thead><tbody>" + body + "</tbody></table></div></main>"
+        "<script>" + _FLEET_JS + "</script></body></html>"
     )
+
+
+# Fleet-page client script: confirms every action, then POSTs to /fleet/command.
+# Kept as a plain string (braces) separate from the f-string page assembly.
+_FLEET_JS = r"""
+(function(){
+  var token = new URLSearchParams(location.search).get('token');
+  // When authed via ?token= (not Basic Auth), propagate it to fetches + log links.
+  if(token){
+    document.querySelectorAll('a.logs-link').forEach(function(a){
+      a.href += (a.href.indexOf('?')>=0?'&':'?') + 'token=' + encodeURIComponent(token);
+    });
+  }
+  var msg = document.getElementById('msg');
+  function flash(t, ok){ msg.textContent = t; msg.className = ok ? 'ok' : 'err'; }
+  var table = document.querySelector('table');
+  table.addEventListener('click', function(ev){
+    var btn = ev.target.closest('button[data-act]');
+    if(!btn) return;
+    var act = btn.getAttribute('data-act');
+    var id = btn.getAttribute('data-id');
+    var label = btn.getAttribute('data-label') || id;
+    var ok;
+    if(act === 'reboot'){
+      ok = confirm("Reboot '" + label + "' (" + id + ")? It restarts and is unreachable for ~30s.");
+    } else if(act === 'enter-setup'){
+      var typed = prompt("This takes '" + label + "' OFF the network into WiFi setup mode " +
+        "(someone may need physical access to recover it).\n\nType the device label to confirm:");
+      if(typed === null){ return; }
+      ok = (typed === label);
+      if(!ok){ flash("Label didn't match - cancelled.", false); return; }
+    } else if(act === 'send-logs'){
+      ok = confirm("Request the latest logs from '" + label + "'? They'll appear here within a few minutes.");
+    } else {
+      ok = confirm("Send '" + act + "' to '" + label + "'?");
+    }
+    if(!ok){ return; }
+    btn.disabled = true;
+    var headers = {'Content-Type': 'application/json'};
+    if(token){ headers['X-Admin-Token'] = token; }
+    fetch('/fleet/command', {method:'POST', headers:headers,
+        body: JSON.stringify({device_id:id, action:act})})
+      .then(function(r){ return r.json().then(function(d){
+        if(!r.ok){ throw new Error(d.error || ('HTTP ' + r.status)); } return d; }); })
+      .then(function(){ flash("Queued '" + act + "' for " + label +
+        " - applies on the device's next check-in.", true); })
+      .catch(function(e){ flash('Failed: ' + e.message, false); })
+      .finally(function(){ btn.disabled = false; });
+  });
+})();
+"""
 
 
 @app.route('/fleet.json', methods=['GET'])
@@ -376,7 +500,51 @@ def fleet_view():
             "Authentication required", status=401,
             headers={"WWW-Authenticate": 'Basic realm="Flight fleet"'},
         )
-    return Response(_render_fleet_html(fleet_store.list_devices()), mimetype="text/html")
+    html = _render_fleet_html(
+        fleet_store.list_devices(), canary_id=CANARY_DEVICE_ID,
+        logs_index=fleet_store.logs_index(),
+    )
+    return Response(html, mimetype="text/html")
+
+
+# One-shot commands the fleet page / admins may queue for a device.
+_FLEET_COMMANDS = {"reboot", "enter-setup", "clear-crash", "send-logs"}
+
+
+@app.route('/fleet/command', methods=['POST'])
+def fleet_command():
+    """Queue a one-shot command for a device (admin-only). Delivered on the
+    device's next check-in and acked on the one after."""
+    if ADMIN_TOKEN is None:
+        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not require_admin():
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    device_id = body.get("device_id")
+    action = body.get("action")
+    if not device_id or action not in _FLEET_COMMANDS:
+        return jsonify({"error": "device_id and a valid action are required"}), 400
+    command_id = fleet_store.enqueue_command(device_id, action)
+    return jsonify({"ok": True, "id": command_id}), 200
+
+
+@app.route('/fleet/logs', methods=['GET'])
+def fleet_logs():
+    """The latest uploaded log set for a device (admin-only). Requested via the
+    send-logs command; the device uploads on its next check-in."""
+    if ADMIN_TOKEN is None:
+        return Response("ADMIN_TOKEN is not configured on the server", status=503)
+    if not require_admin():
+        return Response(
+            "Authentication required", status=401,
+            headers={"WWW-Authenticate": 'Basic realm="Flight fleet"'},
+        )
+    device_id = request.args.get("device_id", "")
+    entry = fleet_store.get_logs(device_id)
+    if entry is None:
+        return Response("No logs captured for this device yet.", status=404)
+    header = f"# logs for {device_id} - received {entry['received_at']}\n\n"
+    return Response(header + (entry["logs"] or ""), mimetype="text/plain; charset=utf-8")
 
 
 @app.route('/', methods=['GET'])
