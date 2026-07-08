@@ -97,6 +97,15 @@ class MockUrequests:
       print(f"[EMULATOR] Mock HTTP GET: {url}")
       return MockUrequests.Response(200, test_data)
 
+    @staticmethod
+    def post(url, headers=None, data=None, timeout=None):
+        # Device management check-in: reply with a benign control block (no
+        # update, no command) so the check-in path runs without a real server.
+        print(f"[EMULATOR] Mock HTTP POST: {url}")
+        return MockUrequests.Response(200, {
+            "target_version": None, "update_available": False, "manifest_url": "/ota/manifest",
+        })
+
 # mock Interstate75 display
 class MockDisplay:
     def __init__(self, width, height):

@@ -187,6 +187,40 @@ _last_fetch_ok = None
 _last_fetch_error = None
 _current_flight_summary = None
 
+# --- Device management check-in (separate channel from the flight polls) ----
+CHECKIN_INTERVAL_S = 300      # report in for commands/OTA at most this often (>= 5 min)
+_CHECKIN_ACKS_FILE = "checkin_acks.txt"
+_last_checkin_ticks = None    # None => check in shortly after boot
+_latest_version = None        # server-advertised target version (for /status)
+_update_available = False
+_ota_failed = None            # Stage 2: version auto-rolled-back from, else None
+_pending_send_logs_id = None  # a send-logs command awaiting its log upload
+
+def _load_pending_acks():
+    """Command ids awaiting ack, persisted so a reboot/enter-setup command is
+    acked after the device comes back - otherwise the server redelivers it and
+    the device loops."""
+    try:
+        with open(_CHECKIN_ACKS_FILE) as f:
+            return [int(x) for x in f.read().split(",") if x.strip()]
+    except (OSError, ValueError):
+        return []
+
+def _save_pending_acks(acks):
+    try:
+        if acks:
+            with open(_CHECKIN_ACKS_FILE, "w") as f:
+                f.write(",".join(str(a) for a in acks))
+        else:
+            try:
+                os.remove(_CHECKIN_ACKS_FILE)
+            except OSError:
+                pass
+    except OSError as e:
+        print(f"Could not persist pending acks: {e}")
+
+_pending_acks = _load_pending_acks()
+
 # Recently-seen flights for /history (newest last)
 _FLIGHT_HISTORY_MAX = 15
 _flight_history = []
@@ -273,6 +307,8 @@ def _collect_status():
     return {
         "version": VERSION,
         "device_id": DEVICE_ID,
+        "latest_version": _latest_version,
+        "update_available": _update_available,
         "uptime_s": uptime_s,
         "free_heap_bytes": gc.mem_free(),
         "alloc_heap_bytes": gc.mem_alloc(),
@@ -514,6 +550,16 @@ def _http_get(url, headers):
             print("urequests lacks timeout support; a dead connection may hang until reboot")
     return urequests.get(url, headers=headers)
 
+def _http_post(url, headers, body):
+    global _urequests_supports_timeout
+    if _urequests_supports_timeout:
+        try:
+            return urequests.post(url, headers=headers, data=body, timeout=_REQUEST_TIMEOUT_S)
+        except TypeError:
+            _urequests_supports_timeout = False
+            print("urequests lacks timeout support; a dead connection may hang until reboot")
+    return urequests.post(url, headers=headers, data=body)
+
 def fetch_flight_data(api_key):
     """Fetch closest flight data from the API"""
     global _last_fetch_ticks_ms, _last_fetch_ok, _last_fetch_error
@@ -561,6 +607,90 @@ def fetch_flight_data(api_key):
     finally:
         if 'response' in locals():
             response.close()
+
+def _execute_command(command):
+    """Act on a one-shot command from a check-in. reboot/enter-setup don't
+    return here (the device restarts), so their ack is persisted first."""
+    global _reboot_requested, _pending_send_logs_id
+    action = command.get("action")
+    cid = command.get("id")
+    print(f"CHECKIN: received command '{action}' (id {cid})")
+    if action == "send-logs":
+        # logs + ack are sent together on the next check-in, so a lost upload retries
+        _pending_send_logs_id = cid
+        return
+    # Effect happens now; ack on the next check-in. Persist the ack first so a
+    # reboot/enter-setup command isn't redelivered (and re-run) after the restart.
+    _pending_acks.append(cid)
+    _save_pending_acks(_pending_acks)
+    if action == "reboot":
+        _reboot_requested = True  # poll_webserver() resets after flushing
+    elif action == "clear-crash":
+        # Reuse the /clear-crash handler so the re-persist dedup state
+        # (_last_crash_written) is reset too, exactly like a web-triggered clear
+        _handle_clear_crash(b"", "")
+    elif action == "enter-setup":
+        run_setup_mode("button", None, None)  # never returns (loops until reset)
+    else:
+        print(f"CHECKIN: unknown command '{action}', ignoring")
+
+def check_in(api_key):
+    """Report status to the service and act on any returned command. Called on
+    the CHECKIN_INTERVAL_S cadence, between display cycles."""
+    global _last_checkin_ticks, _latest_version, _update_available
+    global _pending_acks, _pending_send_logs_id
+    _last_checkin_ticks = time.ticks_ms()
+    try:
+        try:
+            lan_ip = network.WLAN(network.STA_IF).ifconfig()[0]
+        except Exception:
+            lan_ip = None
+        ack = list(_pending_acks)
+        body = {
+            "device_id": DEVICE_ID,
+            "version": VERSION,
+            "label": USER_AGENT_ID,
+            "lan_ip": lan_ip,
+            "uptime_s": _uptime_seconds(),
+            "last_crash": _read_last_crash() is not None,
+            "ota_pending": None,
+            "ota_failed": _ota_failed,
+        }
+        if _pending_send_logs_id is not None:
+            try:
+                body["logs"] = bytes(_log_buffer.buf).decode()
+            except Exception:
+                body["logs"] = ""
+            ack.append(_pending_send_logs_id)
+        body["ack"] = ack
+
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json",
+                   "User-Agent": f"I75 Matrix Display/{VERSION} {USER_AGENT_ID}"}
+        command = None
+        response = _http_post(f"{API_URL}/device/checkin", headers, json.dumps(body))
+        try:
+            if response.status_code == 200:
+                data = response.json()
+                # Everything we just sent (acks + any logs) is now processed server-side
+                _pending_acks = []
+                _pending_send_logs_id = None
+                _save_pending_acks(_pending_acks)
+                _latest_version = data.get("target_version")
+                _update_available = bool(data.get("update_available"))
+                command = data.get("command")
+            else:
+                print(f"Check-in HTTP {response.status_code}")
+        finally:
+            response.close()
+        # Executed only after the response is closed: enter-setup never returns
+        # (it loops until reset), so running it inside the try/finally would
+        # leak the socket for the whole provisioning session
+        if command:
+            _execute_command(command)
+    except Exception as e:
+        # Best-effort: a failed check-in must never disrupt the display. Unsent
+        # acks/logs stay pending and retry next time.
+        print(f"Check-in failed: {e}")
 
 # Helpers using explicit ranges since the Pimoroni MicroPython build omits str.isdigit()/isalpha()/isalnum()
 def _is_digit(ch):
@@ -1034,6 +1164,11 @@ def main():
     
     consecutive_fetch_failures = 0
     while True:
+        # Management check-in on its own cadence, before the quiet-time branch so
+        # commands/OTA still flow overnight. Between display cycles, never mid-frame.
+        if _last_checkin_ticks is None or \
+                time.ticks_diff(time.ticks_ms(), _last_checkin_ticks) >= CHECKIN_INTERVAL_S * 1000:
+            check_in(FLIGHT_FINDER_API_KEY)
         _maybe_sync_ntp()
         if is_quiet_period():
             print("Quiet time")
