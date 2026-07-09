@@ -63,8 +63,13 @@ On the Dokku server:
 dokku storage:ensure-directory flight-finder
 dokku storage:mount flight-finder /var/lib/dokku/data/storage/flight-finder:/app/storage
 
-# Point the app at a database on the volume, and set the fleet admin token
-dokku config:set flight-finder FLEET_DB_PATH=/app/storage/fleet.db ADMIN_TOKEN=your_admin_secret
+# Point the app at a database + OTA store on the volume, set the fleet admin
+# token, and name your own device as the OTA canary (see below)
+dokku config:set flight-finder \
+  FLEET_DB_PATH=/app/storage/fleet.db \
+  OTA_DIR=/app/storage/ota \
+  ADMIN_TOKEN=your_admin_secret \
+  CANARY_DEVICE_ID=your_device_id
 
 dokku ps:restart flight-finder
 
@@ -74,9 +79,10 @@ dokku storage:report flight-finder
 
 Notes:
 - `storage:ensure-directory` creates the host directory owned by the container's runtime user, so the app can write to it.
-- The data now survives redeploys and restarts because it lives on the host volume, not the ephemeral container filesystem.
+- The data now survives redeploys and restarts because it lives on the host volume, not the ephemeral container filesystem. This matters for both the fleet database and the OTA payload (`OTA_DIR`), which holds the published device firmware + `manifest.json`.
 - WAL mode creates sibling `fleet.db-wal` and `fleet.db-shm` files next to `fleet.db` on the volume - this is expected.
-- `ADMIN_TOKEN` guards `/fleet` (HTML) and `/fleet.json`. In a browser, `/fleet` prompts for HTTP Basic Auth: enter anything as the username and the admin token as the password. For scripts, send it as `X-Admin-Token: <token>` (or `?token=<token>`). Without `ADMIN_TOKEN` set, the fleet endpoints refuse to serve (503) rather than exposing device IPs.
+- `ADMIN_TOKEN` guards `/fleet` (HTML), `/fleet.json`, `/fleet/command`, `/fleet/promote`, and `/ota/publish`. In a browser, `/fleet` prompts for HTTP Basic Auth: enter anything as the username and the admin token as the password. For scripts, send it as `X-Admin-Token: <token>` (or `?token=<token>`). Without `ADMIN_TOKEN` set, those endpoints refuse to serve (503) rather than exposing device IPs.
+- `CANARY_DEVICE_ID` is the one device (your own - find its id on `/fleet` or the device's `/status`) that receives a freshly published OTA build first. Everyone else only updates after you Promote it. See the device README's [Fleet management & over-the-air updates](../examples/interstate75/README.md#fleet-management--over-the-air-updates).
 
 ## Dokku Configuration Options
 

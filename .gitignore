@@ -6,3 +6,5 @@ __pycache__/
 fleet.db
 fleet.db-wal
 fleet.db-shm
+ota/
+examples/interstate75/.publish_url

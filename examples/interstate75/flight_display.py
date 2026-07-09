@@ -193,8 +193,45 @@ _CHECKIN_ACKS_FILE = "checkin_acks.txt"
 _last_checkin_ticks = None    # None => check in shortly after boot
 _latest_version = None        # server-advertised target version (for /status)
 _update_available = False
-_ota_failed = None            # Stage 2: version auto-rolled-back from, else None
 _pending_send_logs_id = None  # a send-logs command awaiting its log upload
+
+# OTA markers (duplicated as plain strings from ota.py, so reading them here
+# doesn't force ota.py to be imported on every check-in)
+OTA_PENDING = "ota_pending.json"
+OTA_BAK_DIR = "ota_bak"
+OTA_FAILED = "ota_failed.txt"
+
+def _read_ota_failed():
+    """Version of a build that main.py auto-rolled-back, or None. Reported in
+    the check-in so the fleet page can flag it."""
+    try:
+        with open(OTA_FAILED) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+_ota_failed = _read_ota_failed()
+
+def _confirm_ota_boot():
+    """Reaching a healthy boot commits a pending update: drop the rollback
+    marker + backup so main.py won't roll back a good update on a later reboot."""
+    removed = False
+    try:
+        os.remove(OTA_PENDING)
+        removed = True
+    except OSError:
+        pass
+    try:
+        for name in os.listdir(OTA_BAK_DIR):
+            try:
+                os.remove(OTA_BAK_DIR + "/" + name)
+            except OSError:
+                pass
+        os.rmdir(OTA_BAK_DIR)
+    except OSError:
+        pass
+    if removed:
+        print("OTA: update confirmed healthy")
 
 def _load_pending_acks():
     """Command ids awaiting ack, persisted so a reboot/enter-setup command is
@@ -608,6 +645,37 @@ def fetch_flight_data(api_key):
         if 'response' in locals():
             response.close()
 
+def _ota_status_screen(msg):
+    """Show OTA progress on the matrix (called back from ota.apply_update)."""
+    try:
+        display.set_pen(BLACK)
+        display.clear()
+        display.set_pen(YELLOW)
+        display.text("OTA", 2, 2, WIDTH, 1)
+        display.set_pen(WHITE)
+        display.text(msg, 2, 13, WIDTH, 1)
+        i75.update()
+    except Exception:
+        pass
+
+def _apply_ota(api_key, target_version):
+    """Lazy-import the updater and try to install target_version. Reboots on a
+    successful swap; otherwise returns and we retry on the next check-in."""
+    try:
+        import ota
+    except Exception as e:
+        print(f"OTA: module unavailable: {e}")
+        return
+    try:
+        result = ota.apply_update(API_URL, api_key, target_version, on_status=_ota_status_screen)
+    except Exception as e:
+        print(f"OTA: apply failed: {e}")
+        return
+    if result == "updated":
+        print("OTA: rebooting into the new build")
+        time.sleep(2)  # leave the "Updated" screen up briefly
+        machine.reset()
+
 def _execute_command(command):
     """Act on a one-shot command from a check-in. reboot/enter-setup don't
     return here (the device restarts), so their ack is persisted first."""
@@ -667,6 +735,7 @@ def check_in(api_key):
         headers = {"X-API-Key": api_key, "Content-Type": "application/json",
                    "User-Agent": f"I75 Matrix Display/{VERSION} {USER_AGENT_ID}"}
         command = None
+        target = None
         response = _http_post(f"{API_URL}/device/checkin", headers, json.dumps(body))
         try:
             if response.status_code == 200:
@@ -677,16 +746,22 @@ def check_in(api_key):
                 _save_pending_acks(_pending_acks)
                 _latest_version = data.get("target_version")
                 _update_available = bool(data.get("update_available"))
+                if _update_available:
+                    target = _latest_version
                 command = data.get("command")
             else:
                 print(f"Check-in HTTP {response.status_code}")
         finally:
             response.close()
-        # Executed only after the response is closed: enter-setup never returns
-        # (it loops until reset), so running it inside the try/finally would
-        # leak the socket for the whole provisioning session
+        # Done after the response is closed: enter-setup never returns (it loops
+        # until reset), so running it inside the try/finally would leak the
+        # socket for the whole provisioning session.
         if command:
             _execute_command(command)
+        # OTA is attempted at most once per check-in (not per display cycle);
+        # skip if a command already asked us to reboot.
+        if target and not _reboot_requested:
+            _apply_ota(api_key, target)
     except Exception as e:
         # Best-effort: a failed check-in must never disrupt the display. Unsent
         # acks/logs stay pending and retry next time.
@@ -1152,6 +1227,11 @@ def main():
     ntptime.host = "pool.ntp.org"
     _maybe_sync_ntp()
 
+    # Reaching here means the new code imported and got WiFi + the webserver up:
+    # a strong "this build boots" signal, so commit any pending OTA before the
+    # loop (a crash-looping bad update never gets this far and is rolled back).
+    _confirm_ota_boot()
+
     print("BOOT: entering display loop")
     display.set_pen(BLACK)
     display.clear()
@@ -1161,7 +1241,7 @@ def main():
     display.text(f"{LONGITUDE}", 2, 23, 100, 1)
     i75.update()
     time.sleep(3)
-    
+
     consecutive_fetch_failures = 0
     while True:
         # Management check-in on its own cadence, before the quiet-time branch so

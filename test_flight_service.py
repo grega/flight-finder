@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from flight_service import app, calculate_bounds, API_KEY, serialize_flight, airport_name
 import fleet_store
+import ota_store
 
 @pytest.fixture(autouse=True)
 def disable_api_key(monkeypatch):
@@ -17,6 +18,11 @@ def isolated_fleet_db(tmp_path, monkeypatch):
     pollute) one database."""
     monkeypatch.setattr("fleet_store.DB_PATH", str(tmp_path / "fleet.db"))
     fleet_store.init_db()
+
+@pytest.fixture(autouse=True)
+def isolated_ota_dir(tmp_path, monkeypatch):
+    """Point the OTA store at a per-test dir so publishes never write into the repo."""
+    monkeypatch.setattr("ota_store.OTA_DIR", str(tmp_path / "ota"))
 
 @pytest.fixture
 def client():
@@ -516,3 +522,87 @@ def test_fleet_html_renders_with_valid_token(client, monkeypatch):
     html = response.get_data(as_text=True)
     assert "dev-html" in html and "Living Room" in html
 
+
+
+# ---- OTA: publish / manifest / file / promote -----------------------------
+
+def test_ota_publish_sets_canary_only(client, monkeypatch):
+    """A publish sets canary_version (canary sees it) but not fleet_version."""
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    monkeypatch.setattr("flight_service.CANARY_DEVICE_ID", "canary01")
+    r = client.post("/ota/publish", headers={"X-Admin-Token": "sek"},
+                    json={"version": "1.1.0", "files": {"flight_display.py": "print(1)\n"}})
+    assert r.status_code == 200
+    assert fleet_store.get_meta("canary_version") == "1.1.0"
+    assert fleet_store.get_meta("fleet_version") is None
+    canary = client.post("/device/checkin", json={"device_id": "canary01", "version": "1.0.0"}).get_json()
+    other = client.post("/device/checkin", json={"device_id": "dev2", "version": "1.0.0"}).get_json()
+    assert canary["update_available"] and not other["update_available"]
+
+
+def test_ota_publish_monotonic_and_malformed(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    H = {"X-Admin-Token": "sek"}
+    client.post("/ota/publish", headers=H, json={"version": "1.1.0", "files": {"a.py": "1\n"}})
+    assert client.post("/ota/publish", headers=H, json={"version": "1.1.0", "files": {"a.py": "2\n"}}).status_code == 409
+    assert client.post("/ota/publish", headers=H, json={"version": "1.0.0", "files": {"a.py": "2\n"}}).status_code == 409
+    assert client.post("/ota/publish", headers=H, json={"version": "x.y", "files": {"a.py": "2\n"}}).status_code == 400
+    assert client.post("/ota/publish", headers=H, json={"version": "1.2.0", "files": "nope"}).status_code == 400
+
+
+def test_ota_publish_requires_admin(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    assert client.post("/ota/publish", json={"version": "1.1.0", "files": {"a.py": "1"}}).status_code == 401
+
+
+def test_ota_manifest_and_file(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    assert client.get("/ota/manifest").status_code == 404  # nothing published yet
+    client.post("/ota/publish", headers={"X-Admin-Token": "sek"},
+                json={"version": "1.1.0", "files": {"flight_display.py": "print(1)\n"}})
+    manifest = client.get("/ota/manifest").get_json()
+    assert manifest["version"] == "1.1.0" and manifest["files"][0]["name"] == "flight_display.py"
+    assert "sha256" in manifest["files"][0] and "crc32" in manifest["files"][0]
+    fdl = client.get("/ota/file/flight_display.py")
+    assert fdl.status_code == 200 and fdl.data == b"print(1)\n"
+    assert client.get("/ota/file/unknown.py").status_code == 404
+    assert client.get("/ota/file/config.py").status_code == 404  # not in the manifest
+
+
+def test_promote_widens_to_fleet(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    H = {"X-Admin-Token": "sek"}
+    assert client.post("/fleet/promote", headers=H).status_code == 400  # nothing published
+    client.post("/ota/publish", headers=H, json={"version": "1.1.0", "files": {"a.py": "1\n"}})
+    r = client.post("/fleet/promote", headers=H)
+    assert r.status_code == 200 and r.get_json()["fleet_version"] == "1.1.0"
+    other = client.post("/device/checkin", json={"device_id": "dev2", "version": "1.0.0"}).get_json()
+    assert other["update_available"] and other["target_version"] == "1.1.0"
+
+
+def test_promote_requires_admin(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    assert client.post("/fleet/promote").status_code == 401
+
+
+# ---- ota_store unit tests -------------------------------------------------
+
+def test_ota_store_checksums_and_read():
+    import hashlib, binascii
+    m = ota_store.publish("1.0.0", {"flight_display.py": "print(1)\n"})
+    e = m["files"][0]
+    assert e["sha256"] == hashlib.sha256(b"print(1)\n").hexdigest()
+    assert e["crc32"] == "%08x" % (binascii.crc32(b"print(1)\n") & 0xffffffff)
+    assert e["size"] == len(b"print(1)\n")
+    assert ota_store.read_file("flight_display.py") == b"print(1)\n"
+    assert ota_store.read_file("../secrets.py") is None  # traversal guard
+
+
+def test_ota_store_publish_error_status():
+    ota_store.publish("2.0.0", {"a.py": "1\n"})
+    with pytest.raises(ota_store.PublishError) as exc:
+        ota_store.publish("2.0.0", {"a.py": "2\n"})
+    assert exc.value.status == 409
+    with pytest.raises(ota_store.PublishError) as exc:
+        ota_store.publish("2.0.1", {"bad name.py": "1\n"})
+    assert exc.value.status == 400

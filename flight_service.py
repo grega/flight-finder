@@ -13,6 +13,7 @@ import airportsdata
 import os
 
 import fleet_store
+import ota_store
 
 load_dotenv()
 
@@ -340,10 +341,28 @@ def _relative_age(last_seen_iso):
 _OFFLINE_AFTER_S = 900
 
 
-def _render_fleet_html(devices, canary_id=None, logs_index=None):
+def _ota_banner(canary_version, fleet_version):
+    """The OTA rollout banner: published (canary) vs fleet version, with a
+    Promote button when there's a canary-tested build not yet on the fleet."""
+    if not canary_version and not fleet_version:
+        return ("<div class=ota>No firmware published yet. "
+                "Use <b>publish.py</b> to publish a build to the canary.</div>")
+    fleet_txt = escape(fleet_version) if fleet_version else "&mdash;"
+    banner = (f"<div class=ota>Published to canary: <b>{escape(canary_version or '&mdash;')}</b>"
+              f" &middot; Fleet: <b>{fleet_txt}</b>")
+    # canary_version >= fleet_version always (publish enforces monotonic), so a
+    # simple inequality means there's a newer, canary-tested build to roll out.
+    if canary_version and canary_version != fleet_version:
+        banner += (f' <button id=promote-btn data-version="{escape(canary_version)}">'
+                   f'Promote {escape(canary_version)} to fleet</button>')
+    return banner + "</div>"
+
+
+def _render_fleet_html(devices, canary_id=None, logs_index=None,
+                       canary_version=None, fleet_version=None):
     """Self-contained HTML fleet table (no external assets), auto-refreshing,
     with per-device management actions. All state-changing buttons confirm first
-    (accidental-click guard) and POST to /fleet/command."""
+    (accidental-click guard) and POST to /fleet/command or /fleet/promote."""
     logs_index = logs_index or {}
     if devices:
         rows = []
@@ -356,10 +375,17 @@ def _render_fleet_html(devices, canary_id=None, logs_index=None):
             did_attr = escape(did)
             label = str(d.get("label") or "")
             label_attr = escape(label)
-            badge = " <span class=badge>canary</span>" if canary_id and did == canary_id else ""
+            is_canary = bool(canary_id) and did == canary_id
+            badge = " <span class=badge>canary</span>" if is_canary else ""
             ota_failed = d.get("ota_failed")
             warn = (f' <span class=warn title="auto-rolled-back from a failed update">'
                     f'⚠ {escape(str(ota_failed))}</span>') if ota_failed else ""
+            # Flag a device whose running version differs from its own target
+            # (canary devices track canary_version; the rest track fleet_version).
+            dver = str(d.get("version") or "?")
+            target = canary_version if is_canary else fleet_version
+            drift = (f' <span class=warn title="target">&rarr; {escape(str(target))}</span>'
+                     ) if target and dver != "?" and dver != target else ""
             lan = d.get("lan_ip")
             lan_cell = (f'<a href="http://{escape(str(lan))}/" target=_blank rel=noopener>'
                         f'{escape(str(lan))}</a>') if lan else ""
@@ -377,7 +403,7 @@ def _render_fleet_html(devices, canary_id=None, logs_index=None):
                 "<tr>"
                 f"<td class=mono>{escape(did)}{badge}{warn}</td>"
                 f"<td>{escape(label)}</td>"
-                f"<td class=mono>{escape(str(d.get('version') or '?'))}</td>"
+                f"<td class=mono>{escape(dver)}{drift}</td>"
                 f"<td>{seen_cell}</td>"
                 f"<td class=mono>{escape(str(d.get('last_ip') or ''))}</td>"
                 f"<td class=mono>{lan_cell}</td>"
@@ -416,9 +442,16 @@ def _render_fleet_html(devices, canary_id=None, logs_index=None):
         "border-radius:5px;background:#fff;cursor:pointer}"
         "button.act:disabled{opacity:0.5;cursor:default}"
         "td.actions a{font-size:0.75rem}"
+        ".ota{background:#fff;border-radius:8px;padding:0.6rem 0.9rem;margin:0 0 1rem;font-size:0.85rem;"
+        "box-shadow:0 1px 3px rgba(0,0,0,0.1)}"
+        ".ota b{font-family:ui-monospace,Menlo,monospace}"
+        "#promote-btn{margin-left:0.6rem;padding:0.3rem 0.7rem;font-size:0.8rem;border:1px solid #1667c1;"
+        "border-radius:5px;background:#1667c1;color:#fff;cursor:pointer}"
+        "#promote-btn:disabled{opacity:0.5;cursor:default}"
         "</style></head><body><main>"
         "<h1>Flight Finder fleet</h1>"
         f"<p class=sub>{len(devices)} device(s) &middot; auto-refreshes every 30s</p>"
+        + _ota_banner(canary_version, fleet_version) +
         "<div id=msg></div>"
         "<div class=scroll><table><thead><tr>"
         "<th>Device ID</th><th>Label</th><th>Version</th><th>Last seen</th>"
@@ -450,7 +483,7 @@ _FLEET_JS = r"""
     var label = btn.getAttribute('data-label') || id;
     var ok;
     if(act === 'reboot'){
-      ok = confirm("Reboot '" + label + "' (" + id + ")? It restarts and is unreachable for ~30s.");
+      ok = confirm("Reboot '" + label + "' (" + id + ")?");
     } else if(act === 'enter-setup'){
       var typed = prompt("This takes '" + label + "' OFF the network into WiFi setup mode " +
         "(someone may need physical access to recover it).\n\nType the device label to confirm:");
@@ -475,6 +508,23 @@ _FLEET_JS = r"""
       .catch(function(e){ flash('Failed: ' + e.message, false); })
       .finally(function(){ btn.disabled = false; });
   });
+
+  var promote = document.getElementById('promote-btn');
+  if(promote){
+    promote.addEventListener('click', function(){
+      var version = promote.getAttribute('data-version');
+      if(!confirm("Promote " + version + " to the WHOLE fleet? Every non-canary device " +
+        "updates on its next check-in. Confirm you've verified it on the canary first.")){ return; }
+      promote.disabled = true;
+      var headers = {'Content-Type': 'application/json'};
+      if(token){ headers['X-Admin-Token'] = token; }
+      fetch('/fleet/promote', {method:'POST', headers:headers})
+        .then(function(r){ return r.json().then(function(d){
+          if(!r.ok){ throw new Error(d.error || ('HTTP ' + r.status)); } return d; }); })
+        .then(function(){ flash("Promoted " + version + " to the fleet - devices converge on their next check-in.", true); })
+        .catch(function(e){ promote.disabled = false; flash('Promote failed: ' + e.message, false); });
+    });
+  }
 })();
 """
 
@@ -503,6 +553,8 @@ def fleet_view():
     html = _render_fleet_html(
         fleet_store.list_devices(), canary_id=CANARY_DEVICE_ID,
         logs_index=fleet_store.logs_index(),
+        canary_version=fleet_store.get_meta("canary_version"),
+        fleet_version=fleet_store.get_meta("fleet_version"),
     )
     return Response(html, mimetype="text/html")
 
@@ -528,6 +580,21 @@ def fleet_command():
     return jsonify({"ok": True, "id": command_id}), 200
 
 
+@app.route('/fleet/promote', methods=['POST'])
+def fleet_promote():
+    """Roll the currently-published (canary-tested) build out to the whole fleet:
+    fleet_version = canary_version. Admin-only; the fleet page confirms first."""
+    if ADMIN_TOKEN is None:
+        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not require_admin():
+        return jsonify({"error": "Unauthorized"}), 401
+    canary = fleet_store.get_meta("canary_version")
+    if not canary:
+        return jsonify({"error": "nothing published to promote"}), 400
+    fleet_store.set_meta("fleet_version", canary)
+    return jsonify({"ok": True, "fleet_version": canary}), 200
+
+
 @app.route('/fleet/logs', methods=['GET'])
 def fleet_logs():
     """The latest uploaded log set for a device (admin-only). Requested via the
@@ -545,6 +612,51 @@ def fleet_logs():
         return Response("No logs captured for this device yet.", status=404)
     header = f"# logs for {device_id} - received {entry['received_at']}\n\n"
     return Response(header + (entry["logs"] or ""), mimetype="text/plain; charset=utf-8")
+
+
+@app.route('/ota/manifest', methods=['GET'])
+def ota_manifest():
+    """The current published firmware manifest (version + per-file checksums).
+    API-key gated like the flight endpoints; the device already sends X-API-Key."""
+    if not validate_api_key():
+        return jsonify({"error": "Unauthorized"}), 401
+    manifest = ota_store.get_manifest()
+    if manifest is None:
+        return jsonify({"error": "nothing published"}), 404
+    return jsonify(manifest), 200
+
+
+@app.route('/ota/file/<name>', methods=['GET'])
+def ota_file(name):
+    """Download one published module. `name` is validated against the manifest's
+    file list inside ota_store, so it can't escape OTA_DIR."""
+    if not validate_api_key():
+        return jsonify({"error": "Unauthorized"}), 401
+    data = ota_store.read_file(name)
+    if data is None:
+        return Response("Unknown file", status=404)
+    return Response(data, mimetype="text/x-python")
+
+
+@app.route('/ota/publish', methods=['POST'])
+def ota_publish():
+    """Publish a new firmware set (admin-only, from publish.py). Reaches the
+    canary only: sets canary_version, leaving fleet_version until a promote."""
+    if ADMIN_TOKEN is None:
+        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not require_admin():
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    version = body.get("version")
+    files = body.get("files")
+    if not isinstance(files, dict):
+        return jsonify({"error": "body needs {version, files: {name: content}}"}), 400
+    try:
+        manifest = ota_store.publish(version, files)
+    except ota_store.PublishError as e:
+        return jsonify({"error": str(e)}), e.status
+    fleet_store.set_meta("canary_version", version)
+    return jsonify({"ok": True, "manifest": manifest, "canary_version": version}), 200
 
 
 @app.route('/', methods=['GET'])
