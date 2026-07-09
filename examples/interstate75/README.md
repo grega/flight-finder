@@ -176,6 +176,12 @@ The service-side controls live behind `ADMIN_TOKEN` (see the [service deployment
 
 Every state-changing action confirms first, so a stray click can't reset a device.
 
+### Per-client API keys
+
+Each device can have its own API key - created and revoked per device from the `/fleet` page's "API keys" panel (the device table's **Client** column shows which key each device last used). See [Authentication](../../README.md#authentication) for how keys work and how they coexist with the shared `SERVICE_API_KEY`.
+
+Provisioning is unchanged: the key is just the `FLIGHT_FINDER_API_KEY` in `secrets.py` (sent as `X-API-Key`), set via the [WiFi setup hotspot](#wifi-setup-mode), `push.py`, or baked in for [one-file install](#one-file-install-firmware--code-in-a-single-uf2) (`--include-secrets`).
+
 ### Pushing an update to the whole fleet (canary → promote)
 
 Updates are **pull-based**: the device compares its running `VERSION` to a target the service advertises, and when they differ it downloads the new modules, verifies them, and swaps them in. Rollout is gated so a bad build can't reach everyone at once:

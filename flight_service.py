@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from html import escape
 from urllib.parse import quote
 import airportsdata
+import hmac
 import os
 
 import fleet_store
@@ -54,11 +55,21 @@ def calculate_bounds(lat: float, lon: float, radius_km: float) -> str:
 
 
 def validate_api_key():
-    """Validate API key if configured."""
-    if API_KEY is None:
+    """Validate the X-API-Key header.
+
+    Accepts either the grandfathered shared SERVICE_API_KEY env var (kept valid
+    while devices migrate to per-client keys) or any enabled key in the api_keys
+    table. When the server is unconfigured - no env key AND no table keys - the
+    flight endpoints stay open, preserving the original dev/unconfigured behaviour."""
+    provided = request.headers.get('X-API-Key')
+    if API_KEY is not None and hmac.compare_digest(provided or "", API_KEY):
         return True
-    provided_key = request.headers.get('X-API-Key')
-    return provided_key == API_KEY
+    row = fleet_store.get_api_key(provided)
+    if row is not None and row["enabled"]:
+        return True
+    if API_KEY is None and not fleet_store.has_api_keys():
+        return True
+    return False
 
 
 def control_for(device_id, version):
@@ -299,6 +310,9 @@ def device_checkin():
     try:
         fleet_store.record(device_id, body.get("label"), version, ip,
                            body.get("lan_ip"), body.get("ota_failed"))
+        # Attribute the key to this device (no-op for the grandfathered env key).
+        # Done here, on the ~5 min check-in, rather than on every flight poll.
+        fleet_store.touch_api_key(request.headers.get('X-API-Key'), device_id)
         logs = body.get("logs")
         if logs is not None:
             fleet_store.store_logs(device_id, logs)
@@ -358,12 +372,69 @@ def _ota_banner(canary_version, fleet_version):
     return banner + "</div>"
 
 
+def _render_keys_html(api_keys):
+    """The 'API keys' panel: a create form plus a table of issued keys with
+    enable/disable/delete actions. Keys are stored plaintext, so the full key is
+    shown (copyable) in the table."""
+    api_keys = api_keys or []
+    if api_keys:
+        rows = []
+        for k in api_keys:
+            key_attr = escape(str(k.get("key") or ""))
+            label = str(k.get("label") or "")
+            label_attr = escape(label)
+            enabled = bool(k.get("enabled"))
+            status = ('<span class=online>● enabled</span>' if enabled
+                      else '<span class=offline>○ disabled</span>')
+            _, created = _relative_age(k.get("created_at"))
+            _, used = _relative_age(k.get("last_seen_at"))
+            last_dev = str(k.get("last_device_id") or "")
+            toggle = (
+                f'<button class=act data-act="key-disable" data-key="{key_attr}" data-label="{label_attr}">Disable</button>'
+                if enabled else
+                f'<button class=act data-act="key-enable" data-key="{key_attr}" data-label="{label_attr}">Enable</button>'
+            )
+            actions = toggle + (
+                f'<button class=act data-act="key-delete" data-key="{key_attr}" data-label="{label_attr}">Delete</button>'
+            )
+            rows.append(
+                "<tr>"
+                f"<td>{escape(label)}</td>"
+                f"<td class=mono>{escape(str(k.get('key') or ''))}</td>"
+                f"<td>{escape(created)}</td>"
+                f"<td>{escape(used)}</td>"
+                f"<td class=mono>{escape(last_dev)}</td>"
+                f"<td>{status}</td>"
+                f"<td class=actions>{actions}</td>"
+                "</tr>"
+            )
+        body = "".join(rows)
+    else:
+        body = ("<tr><td colspan=7 class=empty>No API keys yet - create one to give "
+                "a client its own key.</td></tr>")
+    return (
+        '<section class=keys><h2>API keys</h2>'
+        '<form id=key-form autocomplete=off>'
+        '<input id=key-label placeholder="Client label (e.g. Living room)" maxlength=64>'
+        '<button id=key-create type=submit>Create key</button>'
+        '</form>'
+        '<div class=scroll><table><thead><tr>'
+        '<th>Label</th><th>Key</th><th>Created</th><th>Last used</th>'
+        '<th>Last device</th><th>Status</th><th>Actions</th>'
+        '</tr></thead><tbody>' + body + '</tbody></table></div></section>'
+    )
+
+
 def _render_fleet_html(devices, canary_id=None, logs_index=None,
-                       canary_version=None, fleet_version=None):
-    """Self-contained HTML fleet table (no external assets), auto-refreshing,
-    with per-device management actions. All state-changing buttons confirm first
-    (accidental-click guard) and POST to /fleet/command or /fleet/promote."""
+                       canary_version=None, fleet_version=None, api_keys=None):
+    """Self-contained HTML fleet page (no external assets), auto-refreshing, with
+    an API-keys panel and per-device management actions. All state-changing
+    buttons confirm first (accidental-click guard) and POST to /keys*,
+    /fleet/command, or /fleet/promote."""
     logs_index = logs_index or {}
+    # device_id -> the label of the key it last authenticated with (attribution).
+    key_by_device = {k.get("last_device_id"): k.get("label")
+                     for k in (api_keys or []) if k.get("last_device_id")}
     if devices:
         rows = []
         for d in devices:
@@ -403,6 +474,7 @@ def _render_fleet_html(devices, canary_id=None, logs_index=None,
                 "<tr>"
                 f"<td class=mono>{escape(did)}{badge}{warn}</td>"
                 f"<td>{escape(label)}</td>"
+                f"<td>{escape(str(key_by_device.get(did) or ''))}</td>"
                 f"<td class=mono>{escape(dver)}{drift}</td>"
                 f"<td>{seen_cell}</td>"
                 f"<td class=mono>{escape(str(d.get('last_ip') or ''))}</td>"
@@ -413,7 +485,7 @@ def _render_fleet_html(devices, canary_id=None, logs_index=None,
             )
         body = "".join(rows)
     else:
-        body = "<tr><td colspan=8 class=empty>No devices have checked in yet.</td></tr>"
+        body = "<tr><td colspan=9 class=empty>No devices have checked in yet.</td></tr>"
 
     return (
         "<!DOCTYPE html><html lang=en><head><meta charset=utf-8>"
@@ -448,13 +520,22 @@ def _render_fleet_html(devices, canary_id=None, logs_index=None,
         "#promote-btn{margin-left:0.6rem;padding:0.3rem 0.7rem;font-size:0.8rem;border:1px solid #1667c1;"
         "border-radius:5px;background:#1667c1;color:#fff;cursor:pointer}"
         "#promote-btn:disabled{opacity:0.5;cursor:default}"
+        "h2{font-size:1rem;margin:1.3rem 0 0.5rem}"
+        "#key-form{display:flex;gap:0.5rem;margin:0 0 0.7rem;flex-wrap:wrap}"
+        "#key-label{flex:1;min-width:12rem;max-width:24rem;padding:0.35rem 0.5rem;"
+        "border:1px solid #8a919c;border-radius:5px;font-size:0.85rem}"
+        "#key-create{padding:0.35rem 0.8rem;font-size:0.8rem;border:1px solid #1667c1;"
+        "border-radius:5px;background:#1667c1;color:#fff;cursor:pointer}"
+        "#key-create:disabled{opacity:0.5;cursor:default}"
         "</style></head><body><main>"
         "<h1>Flight Finder fleet</h1>"
         f"<p class=sub>{len(devices)} device(s) &middot; auto-refreshes every 30s</p>"
         + _ota_banner(canary_version, fleet_version) +
         "<div id=msg></div>"
+        + _render_keys_html(api_keys) +
+        "<h2>Devices</h2>"
         "<div class=scroll><table><thead><tr>"
-        "<th>Device ID</th><th>Label</th><th>Version</th><th>Last seen</th>"
+        "<th>Device ID</th><th>Label</th><th>Client</th><th>Version</th><th>Last seen</th>"
         "<th>Household IP</th><th>LAN IP</th><th>Requests</th><th>Actions</th>"
         "</tr></thead><tbody>" + body + "</tbody></table></div></main>"
         "<script>" + _FLEET_JS + "</script></body></html>"
@@ -474,11 +555,26 @@ _FLEET_JS = r"""
   }
   var msg = document.getElementById('msg');
   function flash(t, ok){ msg.textContent = t; msg.className = ok ? 'ok' : 'err'; }
-  var table = document.querySelector('table');
-  table.addEventListener('click', function(ev){
+  function headers(){
+    var h = {'Content-Type': 'application/json'};
+    if(token){ h['X-Admin-Token'] = token; }
+    return h;
+  }
+  function post(url, body){
+    return fetch(url, {method:'POST', headers:headers(), body: JSON.stringify(body || {})})
+      .then(function(r){ return r.json().then(function(d){
+        if(!r.ok){ throw new Error(d.error || ('HTTP ' + r.status)); } return d; }); });
+  }
+
+  // One delegated click handler for both tables (device commands + key actions).
+  document.addEventListener('click', function(ev){
     var btn = ev.target.closest('button[data-act]');
     if(!btn) return;
     var act = btn.getAttribute('data-act');
+    if(act.indexOf('key-') === 0){ handleKey(act, btn); } else { handleDevice(act, btn); }
+  });
+
+  function handleDevice(act, btn){
     var id = btn.getAttribute('data-id');
     var label = btn.getAttribute('data-label') || id;
     var ok;
@@ -497,17 +593,51 @@ _FLEET_JS = r"""
     }
     if(!ok){ return; }
     btn.disabled = true;
-    var headers = {'Content-Type': 'application/json'};
-    if(token){ headers['X-Admin-Token'] = token; }
-    fetch('/fleet/command', {method:'POST', headers:headers,
-        body: JSON.stringify({device_id:id, action:act})})
-      .then(function(r){ return r.json().then(function(d){
-        if(!r.ok){ throw new Error(d.error || ('HTTP ' + r.status)); } return d; }); })
+    post('/fleet/command', {device_id:id, action:act})
       .then(function(){ flash("Queued '" + act + "' for " + label +
         " - applies on the device's next check-in.", true); })
       .catch(function(e){ flash('Failed: ' + e.message, false); })
       .finally(function(){ btn.disabled = false; });
-  });
+  }
+
+  function handleKey(act, btn){
+    var key = btn.getAttribute('data-key');
+    var label = btn.getAttribute('data-label') || key;
+    var url, ok, verb;
+    if(act === 'key-delete'){
+      ok = confirm("Delete key '" + label + "'? A device still using it stops working on its next request.");
+      url = '/keys/delete'; verb = 'Deleted';
+    } else if(act === 'key-disable'){
+      ok = confirm("Disable key '" + label + "'? It's rejected on the next request (re-enable anytime).");
+      url = '/keys/disable'; verb = 'Disabled';
+    } else { // key-enable
+      ok = true; url = '/keys/enable'; verb = 'Enabled';
+    }
+    if(!ok){ return; }
+    btn.disabled = true;
+    post(url, {key:key})
+      .then(function(){ flash(verb + " key '" + label + "'.", true);
+        setTimeout(function(){ location.reload(); }, 700); })
+      .catch(function(e){ btn.disabled = false; flash('Failed: ' + e.message, false); });
+  }
+
+  var keyForm = document.getElementById('key-form');
+  if(keyForm){
+    keyForm.addEventListener('submit', function(ev){
+      ev.preventDefault();
+      var input = document.getElementById('key-label');
+      var label = (input.value || '').trim();
+      if(!label){ flash('Enter a label for the key.', false); return; }
+      var btn = document.getElementById('key-create');
+      btn.disabled = true;
+      post('/keys', {label:label})
+        .then(function(d){ flash("Created key for '" + label + "': " + d.key +
+          " (also shown in the table below)", true);
+          input.value = ''; setTimeout(function(){ location.reload(); }, 2500); })
+        .catch(function(e){ flash('Failed: ' + e.message, false); })
+        .finally(function(){ btn.disabled = false; });
+    });
+  }
 
   var promote = document.getElementById('promote-btn');
   if(promote){
@@ -516,11 +646,7 @@ _FLEET_JS = r"""
       if(!confirm("Promote " + version + " to the WHOLE fleet? Every non-canary device " +
         "updates on its next check-in. Confirm you've verified it on the canary first.")){ return; }
       promote.disabled = true;
-      var headers = {'Content-Type': 'application/json'};
-      if(token){ headers['X-Admin-Token'] = token; }
-      fetch('/fleet/promote', {method:'POST', headers:headers})
-        .then(function(r){ return r.json().then(function(d){
-          if(!r.ok){ throw new Error(d.error || ('HTTP ' + r.status)); } return d; }); })
+      post('/fleet/promote', {})
         .then(function(){ flash("Promoted " + version + " to the fleet - devices converge on their next check-in.", true); })
         .catch(function(e){ promote.disabled = false; flash('Promote failed: ' + e.message, false); });
     });
@@ -536,7 +662,8 @@ def fleet_json():
         return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
-    return jsonify({"devices": fleet_store.list_devices()}), 200
+    return jsonify({"devices": fleet_store.list_devices(),
+                    "api_keys": fleet_store.list_api_keys()}), 200
 
 
 @app.route('/fleet', methods=['GET'])
@@ -555,6 +682,7 @@ def fleet_view():
         logs_index=fleet_store.logs_index(),
         canary_version=fleet_store.get_meta("canary_version"),
         fleet_version=fleet_store.get_meta("fleet_version"),
+        api_keys=fleet_store.list_api_keys(),
     )
     return Response(html, mimetype="text/html")
 
@@ -578,6 +706,58 @@ def fleet_command():
         return jsonify({"error": "device_id and a valid action are required"}), 400
     command_id = fleet_store.enqueue_command(device_id, action)
     return jsonify({"ok": True, "id": command_id}), 200
+
+
+@app.route('/keys', methods=['POST'])
+def keys_create():
+    """Create a new per-client API key (admin-only). Returns the plaintext key
+    once - it's also visible afterwards on the fleet page (stored plaintext)."""
+    if ADMIN_TOKEN is None:
+        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not require_admin():
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    label = (body.get("label") or "").strip()
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+    key = fleet_store.create_api_key(label)
+    return jsonify({"ok": True, "key": key, "label": label}), 200
+
+
+@app.route('/keys/enable', methods=['POST'])
+@app.route('/keys/disable', methods=['POST'])
+def keys_set_enabled():
+    """Enable or disable an API key (admin-only). Disabling revokes it on the
+    client's next request; the key stays listed so it can be re-enabled."""
+    if ADMIN_TOKEN is None:
+        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not require_admin():
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    key = body.get("key")
+    if not key:
+        return jsonify({"error": "key is required"}), 400
+    enabled = request.path.endswith("/enable")
+    if not fleet_store.set_api_key_enabled(key, enabled):
+        return jsonify({"error": "unknown key"}), 404
+    return jsonify({"ok": True, "enabled": enabled}), 200
+
+
+@app.route('/keys/delete', methods=['POST'])
+def keys_delete():
+    """Delete an API key entirely (admin-only). A device still holding it drops
+    to Unauthorized on its next request."""
+    if ADMIN_TOKEN is None:
+        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not require_admin():
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    key = body.get("key")
+    if not key:
+        return jsonify({"error": "key is required"}), 400
+    if not fleet_store.delete_api_key(key):
+        return jsonify({"error": "unknown key"}), 404
+    return jsonify({"ok": True}), 200
 
 
 @app.route('/fleet/promote', methods=['POST'])

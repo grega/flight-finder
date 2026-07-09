@@ -22,13 +22,24 @@ dokku apps:create flight-finder
 dokku domains:add flight-finder your-domain.com
 ```
 
-### 3. (Optional) Configure environment variables
+### 3. (Optional) Configure device authentication
 
-If you want to add API key authentication:
+Devices authenticate to the flight/OTA endpoints with an `X-API-Key` header. There are two ways to provision keys, and they work together:
 
-```bash
-dokku config:set flight-finder SERVICE_API_KEY=your_secret_key_here
-```
+- **Per-client keys (recommended)** - create one key per device from the `/fleet` admin page's "API keys" panel, so each client has its own key you can revoke individually. These live in the fleet database (no redeploy to add/revoke); managing them needs `ADMIN_TOKEN` (below).
+- **Shared key** - a single `SERVICE_API_KEY` every device may use:
+
+  ```bash
+  dokku config:set flight-finder SERVICE_API_KEY=your_secret_key_here
+  ```
+
+  It stays valid *alongside* per-client keys, which makes migrating an existing fleet easy: keep it set while you reissue devices their own keys, then retire it once they're all migrated:
+
+  ```bash
+  dokku config:unset flight-finder SERVICE_API_KEY
+  ```
+
+If neither is configured - no `SERVICE_API_KEY` **and** no keys created - the flight endpoints stay open (convenient for local/dev). Set at least one before exposing the service publicly.
 
 ### 4. Deploy from your local machine
 
@@ -81,7 +92,8 @@ Notes:
 - `storage:ensure-directory` creates the host directory owned by the container's runtime user, so the app can write to it.
 - The data now survives redeploys and restarts because it lives on the host volume, not the ephemeral container filesystem. This matters for both the fleet database and the OTA payload (`OTA_DIR`), which holds the published device firmware + `manifest.json`.
 - WAL mode creates sibling `fleet.db-wal` and `fleet.db-shm` files next to `fleet.db` on the volume - this is expected.
-- `ADMIN_TOKEN` guards `/fleet` (HTML), `/fleet.json`, `/fleet/command`, `/fleet/promote`, and `/ota/publish`. In a browser, `/fleet` prompts for HTTP Basic Auth: enter anything as the username and the admin token as the password. For scripts, send it as `X-Admin-Token: <token>` (or `?token=<token>`). Without `ADMIN_TOKEN` set, those endpoints refuse to serve (503) rather than exposing device IPs.
+- `ADMIN_TOKEN` guards `/fleet` (HTML), `/fleet.json`, `/fleet/command`, `/fleet/promote`, `/ota/publish`, and the per-client-key endpoints (`/keys`, `/keys/enable`, `/keys/disable`, `/keys/delete`). In a browser, `/fleet` prompts for HTTP Basic Auth: enter anything as the username and the admin token as the password. For scripts, send it as `X-Admin-Token: <token>` (or `?token=<token>`). Without `ADMIN_TOKEN` set, those endpoints refuse to serve (503) rather than exposing device IPs.
+- **Per-client API keys**: the `/fleet` page's "API keys" panel creates (one per client/device), labels, and revokes keys - a disabled or deleted key is rejected on that device's next request, without touching any other device. A device presents its key as `X-API-Key`; provision it via the device's WiFi setup hotspot, `push.py`, or by baking it into `secrets.py` (see the device README). The device table's `Client` column shows which key each device last authenticated with.
 - `CANARY_DEVICE_ID` is the one device (your own - find its id on `/fleet` or the device's `/status`) that receives a freshly published OTA build first. Everyone else only updates after you Promote it. See the device README's [Fleet management & over-the-air updates](../examples/interstate75/README.md#fleet-management--over-the-air-updates).
 
 ## Dokku Configuration Options

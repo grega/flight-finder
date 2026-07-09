@@ -606,3 +606,98 @@ def test_ota_store_publish_error_status():
     with pytest.raises(ota_store.PublishError) as exc:
         ota_store.publish("2.0.1", {"bad name.py": "1\n"})
     assert exc.value.status == 400
+
+
+# ---- Per-client API keys --------------------------------------------------
+# /ota/manifest is API-key gated and (with an empty OTA dir) returns 404 when
+# the key passes and 401 when it doesn't - a clean auth probe with no network.
+
+def test_table_key_accepted_and_unknown_rejected(client):
+    key = fleet_store.create_api_key("Living room")
+    assert client.get("/ota/manifest", headers={"X-API-Key": key}).status_code == 404
+    assert client.get("/ota/manifest", headers={"X-API-Key": "nope"}).status_code == 401
+    # No key at all: once any key exists the endpoints are no longer fail-open.
+    assert client.get("/ota/manifest").status_code == 401
+
+
+def test_disabled_key_rejected_then_reenabled(client):
+    key = fleet_store.create_api_key("Kitchen")
+    fleet_store.set_api_key_enabled(key, False)
+    assert client.get("/ota/manifest", headers={"X-API-Key": key}).status_code == 401
+    fleet_store.set_api_key_enabled(key, True)
+    assert client.get("/ota/manifest", headers={"X-API-Key": key}).status_code == 404
+
+
+def test_env_key_grandfathered_alongside_table_keys(client, monkeypatch):
+    monkeypatch.setattr("flight_service.API_KEY", "shared-old")
+    fleet_store.create_api_key("New client")
+    assert client.get("/ota/manifest", headers={"X-API-Key": "shared-old"}).status_code == 404
+    assert client.get("/ota/manifest", headers={"X-API-Key": "wrong"}).status_code == 401
+
+
+def test_fail_open_only_when_unconfigured(client):
+    # API_KEY is None (autouse) and no keys exist yet -> open (original behaviour).
+    assert client.get("/ota/manifest").status_code == 404
+    fleet_store.create_api_key("Anyone")
+    # Now that a key exists, an unauthenticated request is rejected.
+    assert client.get("/ota/manifest").status_code == 401
+
+
+def test_keys_create_returns_key_and_requires_admin(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    assert client.post("/keys", json={"label": "x"}).status_code == 401  # no token
+    r = client.post("/keys", headers={"X-Admin-Token": "sek"}, json={"label": "Bedroom"})
+    assert r.status_code == 200
+    key = r.get_json()["key"]
+    assert key and client.get("/ota/manifest", headers={"X-API-Key": key}).status_code == 404
+    # blank label rejected
+    assert client.post("/keys", headers={"X-Admin-Token": "sek"}, json={"label": " "}).status_code == 400
+
+
+def test_keys_create_503_when_admin_unset(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", None)
+    assert client.post("/keys", json={"label": "x"}).status_code == 503
+
+
+def test_keys_disable_and_delete_via_endpoints(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    H = {"X-Admin-Token": "sek"}
+    # A second key stays present so the table is never empty - otherwise deleting
+    # the last key reverts an env-less server to its unconfigured fail-open state.
+    fleet_store.create_api_key("Other client")
+    key = client.post("/keys", headers=H, json={"label": "Office"}).get_json()["key"]
+    assert client.post("/keys/disable", headers=H, json={"key": key}).status_code == 200
+    assert client.get("/ota/manifest", headers={"X-API-Key": key}).status_code == 401
+    assert client.post("/keys/enable", headers=H, json={"key": key}).status_code == 200
+    assert client.get("/ota/manifest", headers={"X-API-Key": key}).status_code == 404
+    assert client.post("/keys/delete", headers=H, json={"key": key}).status_code == 200
+    assert client.get("/ota/manifest", headers={"X-API-Key": key}).status_code == 401
+    # deleting/disabling an unknown key -> 404
+    assert client.post("/keys/delete", headers=H, json={"key": "ghost"}).status_code == 404
+    assert client.post("/keys/disable", headers=H, json={"key": "ghost"}).status_code == 404
+
+
+def test_checkin_attributes_key_to_device(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sek")
+    key = fleet_store.create_api_key("Kitchen")
+    r = client.post("/device/checkin", headers={"X-API-Key": key},
+                    json={"device_id": "dev-k", "version": "1.0.0"})
+    assert r.status_code == 200
+    row = fleet_store.get_api_key(key)
+    assert row["last_device_id"] == "dev-k" and row["last_seen_at"] is not None
+    data = client.get("/fleet.json", headers={"X-Admin-Token": "sek"}).get_json()
+    assert any(k["label"] == "Kitchen" and k["last_device_id"] == "dev-k"
+               for k in data["api_keys"])
+
+
+def test_env_key_checkin_creates_no_key_row(client):
+    """The grandfathered env key isn't a table key, so attribution is a no-op."""
+    import flight_service
+    flight_service.API_KEY = "shared-old"
+    try:
+        r = client.post("/device/checkin", headers={"X-API-Key": "shared-old"},
+                        json={"device_id": "dev-legacy", "version": "1.0.0"})
+        assert r.status_code == 200
+    finally:
+        flight_service.API_KEY = None
+    assert fleet_store.list_api_keys() == []

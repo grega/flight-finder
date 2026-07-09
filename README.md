@@ -169,6 +169,15 @@ curl "http://localhost:7478/flights-in-radius?lat=37.7749&lon=-122.4194&radius=2
 
 The response is a `flights` array containing all flights within the specified radius (each `flight` object has the same structure as in the `/closest-flight` response, see above).
 
+## Authentication
+
+The flight endpoints (and the device check-in/OTA endpoints) authenticate with an `X-API-Key` header. A request is accepted if its key matches **either**:
+
+- **`SERVICE_API_KEY`** - a single shared key set in the environment (`.env` locally, `dokku config:set` in production).
+- **A per-client key** - created and revoked from the admin [`/fleet`](#fleet-tracking) page's "API keys" panel, one per device, stored in the fleet database. Disabling or deleting a key blocks just that device on its next request, leaving the rest of the fleet untouched.
+
+Both are honoured at once, so you can keep the shared key working while migrating a fleet to per-client keys, then retire it. If **neither** is configured the endpoints stay open (handy for local dev - lock it down before exposing the service publicly). Managing per-client keys needs `ADMIN_TOKEN`; for production setup see [docs/dokku.md](docs/dokku.md).
+
 ## API Endpoints
 
 ### `GET /`

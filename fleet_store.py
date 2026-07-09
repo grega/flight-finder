@@ -13,6 +13,7 @@ across threads.
 """
 
 import os
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 
@@ -90,6 +91,18 @@ def init_db():
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS fleet_meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key            TEXT PRIMARY KEY,
+                label          TEXT,
+                enabled        INTEGER NOT NULL DEFAULT 1,
+                created_at     TEXT NOT NULL,
+                last_seen_at   TEXT,
+                last_device_id TEXT
+            )
+            """
         )
 
 
@@ -219,3 +232,80 @@ def set_meta(key, value):
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+
+# ---- Per-client API keys ----------------------------------------------------
+# Each row is a key you hand to one client/device. Keys are portable (any device
+# may present a valid enabled key); validate_api_key() also still accepts the
+# grandfathered SERVICE_API_KEY env var during migration. Stored in plaintext so
+# the admin page can re-display them.
+
+def create_api_key(label):
+    """Create a new enabled API key with a human label (the "client" name).
+    Returns the generated plaintext key."""
+    key = secrets.token_urlsafe(24)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO api_keys (key, label, enabled, created_at) VALUES (?, ?, 1, ?)",
+            (key, label, _now()),
+        )
+    return key
+
+
+def get_api_key(key):
+    """The api_keys row for a key as a dict, or None. The caller checks `enabled`."""
+    if not key:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT key, label, enabled, created_at, last_seen_at, last_device_id "
+            "FROM api_keys WHERE key = ?",
+            (key,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_api_keys():
+    """All API keys, newest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT key, label, enabled, created_at, last_seen_at, last_device_id "
+            "FROM api_keys ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_api_key_enabled(key, enabled):
+    """Enable/disable a key. Returns True if a matching row was updated."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE api_keys SET enabled = ? WHERE key = ?",
+            (1 if enabled else 0, key),
+        )
+        return cur.rowcount > 0
+
+
+def delete_api_key(key):
+    """Remove a key entirely. Returns True if a row was deleted."""
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM api_keys WHERE key = ?", (key,))
+        return cur.rowcount > 0
+
+
+def touch_api_key(key, device_id):
+    """Record a key's most recent successful use (last_seen_at + which device).
+    No-op if the key isn't a table key (e.g. the grandfathered env key)."""
+    if not key:
+        return
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE api_keys SET last_seen_at = ?, last_device_id = ? WHERE key = ?",
+            (_now(), device_id, key),
+        )
+
+
+def has_api_keys():
+    """Whether any API key exists (gates the unconfigured fail-open path)."""
+    with _connect() as conn:
+        row = conn.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone()
+    return row is not None
