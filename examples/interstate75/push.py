@@ -18,8 +18,11 @@ this script.
 """
 
 import argparse
+import http.client
 import os
+import socket
 import sys
+import time
 import urllib.request
 import urllib.error
 
@@ -36,7 +39,19 @@ MAIN_STUB_SRC = os.path.join(HERE, "main.py")
 # on-device via /wifi). main.py goes last so an aborted run can't leave a
 # device whose boot stub imports modules newer than the ones on flash.
 ALL_CODE_FILES = ("webserver.py", "wifi_setup.py", "dashboard.py",
-                  "config_editor.py", "flight_display.py", "main.py")
+                  "config_editor.py", "ota.py", "flight_display.py", "main.py")
+
+_HTTP_RETRIES = 3
+# Base backoff, doubled each attempt (0.5s, 1s, 2s), to give a briefly-busy
+# single-threaded device more room to recover than a fixed delay would.
+_HTTP_RETRY_BASE_DELAY_S = 0.5
+_TRANSIENT_HTTP_EXCEPTIONS = (
+    http.client.RemoteDisconnected,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    TimeoutError,
+    socket.timeout,
+)
 
 
 def resolve_host(cli_host):
@@ -56,19 +71,46 @@ def resolve_host(cli_host):
     )
 
 
-def _http(method, host, path, body=None, timeout=30):
+def _is_transient_url_reason(reason):
+    return isinstance(reason, _TRANSIENT_HTTP_EXCEPTIONS)
+
+
+def _retry_wait(method, path, reason, attempt, retries):
+    delay = _HTTP_RETRY_BASE_DELAY_S * (2 ** attempt)
+    print(f"{method} {path}: transient disconnect ({reason}); "
+          f"retry {attempt + 1}/{retries} in {delay:.1f}s")
+    time.sleep(delay)
+
+
+def _http(method, host, path, body=None, timeout=30, retries=_HTTP_RETRIES,
+          allow_no_response=False):
     url = f"http://{host}{path}"
     req = urllib.request.Request(url, data=body, method=method)
     if body is not None:
         req.add_header("Content-Type", "application/octet-stream")
         req.add_header("Content-Length", str(len(body)))
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
-    except urllib.error.URLError as e:
-        sys.exit(f"{method} {url} failed: {e.reason}")
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except urllib.error.URLError as e:
+            reason = getattr(e, "reason", e)
+            if _is_transient_url_reason(reason):
+                if attempt < retries:
+                    _retry_wait(method, path, reason, attempt, retries)
+                    continue
+                if allow_no_response:
+                    return None, b""
+            sys.exit(f"{method} {url} failed: {reason}")
+        except _TRANSIENT_HTTP_EXCEPTIONS as e:
+            if attempt < retries:
+                _retry_wait(method, path, e, attempt, retries)
+                continue
+            if allow_no_response:
+                return None, b""
+            sys.exit(f"{method} {url} failed: {e}")
 
 
 def _upload_file(host, src_path, remote_name):
@@ -83,11 +125,12 @@ def _upload_file(host, src_path, remote_name):
 
 
 def _reboot(host):
-    try:
-        status, response = _http("POST", host, "/reboot", b"", timeout=5)
-        print(f"reboot: HTTP {status} {response.decode(errors='replace').strip()}")
-    except (ConnectionResetError, ConnectionAbortedError):
-        print("reboot: connection reset (expected - device is rebooting)")
+    status, response = _http("POST", host, "/reboot", b"", timeout=5,
+                             retries=0, allow_no_response=True)
+    if status is None:
+        print("reboot: no HTTP response (expected - device is rebooting)")
+        return
+    print(f"reboot: HTTP {status} {response.decode(errors='replace').strip()}")
 
 
 def cmd_code(args):

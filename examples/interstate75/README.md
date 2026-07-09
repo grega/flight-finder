@@ -13,7 +13,7 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
 Once connected to the I75 device:
-  - Copy `main.py`, `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, `config_editor.py`, and `wifi_setup.py` onto the device (`main.py` is a thin boot stub that runs `flight_display.py` and falls back to a recovery webserver if it crashes - see [Recovery mode](#recovery-mode))
+  - Copy `main.py`, `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, `config_editor.py`, `wifi_setup.py`, and `ota.py` onto the device (`main.py` is a thin boot stub that runs `flight_display.py` and falls back to a recovery webserver if it crashes - see [Recovery mode](#recovery-mode)). `./push.py all` copies the whole set for you once the device is on the network.
   - Edit `config.py`:
     - Set `API_URL` to the deployed Flight Finder Service
     - Set your location: `LATITUDE`, `LONGITUDE`, and `RADIUS`
@@ -126,18 +126,37 @@ Per-device values (`LATITUDE`/`LONGITUDE`, `DISPLAY_TYPE`, quiet-hour settings, 
 2. Edit `_device/config.py` locally in your editor.
 3. `./push.py config push` - uploads it back and reboots.
 
-### Future work: pull-based OTA updates
+## Fleet management & over-the-air updates
 
-`push.py` is a *push* model: it needs a route to the device (same LAN, or a tunnel), which doesn't exist once a device lives behind someone else's home router. The natural next step for a small fleet is to make updates *pull-based*, reusing the polling the device already does.
+`push.py` is a *push* model: it needs a route to the device (same LAN, or a tunnel), which doesn't exist once a device lives behind someone else's home router. So devices also **check in** with the Flight Finder Service on their own schedule (every ~5 min, `CHECKIN_INTERVAL_S`) via `POST /device/checkin` - a management channel separate from the flight polls that needs **no inbound access** to the device's network. Through it you can see the fleet, run remote commands, and roll out code updates.
 
-The device already contacts the Flight Finder Service every refresh interval, tagged with its `VERSION` (in the `User-Agent`) and `USER_AGENT_ID`. That same channel can carry updates back with no inbound access to the device's network:
+The service-side controls live behind `ADMIN_TOKEN` (see the [service deployment docs](../../docs/dokku.md)); the device only ever makes outbound requests.
 
-1. **Manifest.** The service (or a static URL) publishes a manifest: a target `VERSION` plus the list of module files and their checksums. The device fetches it periodically (e.g. once an hour, or piggybacked on the flight poll).
-2. **Download + verify.** If the manifest version is newer, the device downloads each changed file to a temp name, checks its checksum, and only then `os.rename()`s it into place - the same atomic-write discipline `/upload` already uses.
-3. **Compile-check + reboot.** Compile-check the new modules (as `/upload` already does for `config.py`), then reboot. `main.py`'s recovery mode is the safety net if the new code fails to import or crashes on boot.
-4. **Rollback.** Keep the previous `main.py`/`flight_display.py` (or a version stamp) so a device that crash-loops on a bad update can fall back to the last-good version rather than needing a physical visit. The WiFi-credential rollback added here (`secrets_backup.py`) is the same pattern.
+### Fleet dashboard & remote commands
 
-Most of the on-device primitives already exist (atomic writes, compile-checking, recovery mode, version reporting); the missing pieces are the manifest endpoint on the service side and the device-side fetch/verify/swap loop. A command channel (having the flight-poll response optionally carry `{"command": "reboot"}` or "update now") is a lightweight stepping stone worth doing first.
+`GET /fleet` (on the service, admin-only) lists every device that's checked in - version, last-seen, household + LAN IP (the LAN IP links straight to that device's dashboard), request count. Each row has buttons that queue a one-shot command, delivered on the device's next check-in:
+
+- **Reboot** - `machine.reset()`.
+- **Setup** - drop into [WiFi setup mode](#wifi-setup-mode) (typed-label confirmation, since it takes the device off the network).
+- **Request logs** - the device uploads its in-RAM log buffer on the next check-in; a **logs** link then shows them (handy for debugging a device you can't reach).
+
+Every state-changing action confirms first, so a stray click can't reset a device.
+
+### Pushing an update to the whole fleet (canary → promote)
+
+Updates are **pull-based**: the device compares its running `VERSION` to a target the service advertises, and when they differ it downloads the new modules, verifies them, and swaps them in. Rollout is gated so a bad build can't reach everyone at once:
+
+1. **Bump `VERSION`** in `flight_display.py` and run **`./publish.py`**. This bundles the code modules and uploads them to the service, which stores them + a checksummed `manifest.json` and sets them as the **canary** target. (`publish.py` reads the URL from `--url`/`FLIGHT_FINDER_URL` and the admin token from `--token`/`FLIGHT_FINDER_ADMIN_TOKEN`.)
+2. **Only the canary device updates.** `CANARY_DEVICE_ID` (a service env var - your own device) is the one that pulls a freshly published build. Everyone else keeps running the current fleet version. Verify the canary came up healthy on the new version via `/fleet` (and pull its logs, poke the display).
+3. **Promote.** Click **Promote v… to fleet** on the `/fleet` page (confirmed) to roll the tested build out to every other device on their next check-in.
+
+**How the device updates safely** (all reusing existing primitives):
+
+- **Download + verify.** Each changed module is fetched to a `.ota` temp file, checked against the manifest's sha256 (or crc32 where the firmware lacks `hashlib`), and compile-checked - *all* files must pass before anything is swapped.
+- **Atomic swap.** Files are `os.rename()`d into place (`main.py` last), after writing an `ota_pending` marker so an interrupted swap is still caught on the next boot.
+- **Auto-rollback.** If the new code crash-loops on boot, `main.py` restores the pre-update modules from the on-device backup, records the bad version in `ota_failed.txt` (so the device won't immediately re-pull it), and comes back on the last-good version - no physical visit needed. A healthy boot commits the update and clears the backup. `main.py`'s [recovery mode](#recovery-mode) is the final net if rollback itself can't help.
+
+Because you must bump `VERSION` to publish (the monotonic guard enforces increasing versions), and the device keys convergence on that string, updates always move forward. To ship a fix for a bad build, publish a *higher* version and promote that.
 
 ### Endpoints
 

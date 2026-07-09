@@ -10,6 +10,14 @@ import time
 RUNTIME_CRASH_REBOOT_S = 600
 CRASH_FILE = "last_crash.txt"  # kept in sync with flight_display.CRASH_FILE
 
+# OTA rollback markers (duplicated as plain strings from ota.py, so the boot
+# stub can roll back a bad update even if that update broke ota.py itself).
+OTA_PENDING = "ota_pending.json"
+OTA_BAK_DIR = "ota_bak"
+OTA_FAILED = "ota_failed.txt"
+OTA_MAX_BOOT_ATTEMPTS = 3   # boots without reaching "healthy" before we roll back
+OTA_RECOVERY_REBOOT_S = 60  # while an update is unconfirmed, reboot fast so the count climbs
+
 
 def _persist_crash(text):
     """Save the crash so it survives the self-reboot below and shows up on the
@@ -228,11 +236,70 @@ def _recovery(exc, reboot_after_s=None):
         time.sleep_ms(100)
 
 
+def _ota_boot_check():
+    """If an OTA update is in flight, count this boot attempt and roll back to
+    the pre-update code if it's crash-looping. Returns the reboot-after seconds
+    to hand _recovery: short while an update is unconfirmed (so a bad update's
+    boots climb toward the rollback threshold), else the normal window."""
+    import json
+    import os
+    try:
+        with open(OTA_PENDING) as f:
+            pending = json.load(f)
+    except (OSError, ValueError):
+        return RUNTIME_CRASH_REBOOT_S  # no update in flight
+
+    version = pending.get("version")
+    attempts = pending.get("attempts", 0) + 1
+    if attempts > OTA_MAX_BOOT_ATTEMPTS:
+        print(f"OTA: update to {version} keeps failing ({attempts - 1} boots); rolling back")
+        _ota_rollback(version)
+        import machine
+        machine.reset()  # boot the restored (last-good) code
+
+    try:
+        with open(OTA_PENDING, "w") as f:
+            json.dump({"version": version, "attempts": attempts}, f)
+    except OSError:
+        pass
+    print(f"OTA: booting unconfirmed update {version} (attempt {attempts}/{OTA_MAX_BOOT_ATTEMPTS})")
+    return OTA_RECOVERY_REBOOT_S
+
+
+def _ota_rollback(version):
+    """Restore the pre-update modules from OTA_BAK_DIR, mark the version failed
+    (so the device won't immediately re-pull it), and clear the pending marker."""
+    import os
+    try:
+        for name in os.listdir(OTA_BAK_DIR):
+            src = OTA_BAK_DIR + "/" + name
+            try:
+                os.rename(src, name)
+            except OSError as e:
+                print(f"OTA: could not restore {name}: {e}")
+        os.rmdir(OTA_BAK_DIR)
+    except OSError:
+        pass
+    try:
+        with open(OTA_FAILED, "w") as f:
+            f.write(version or "")
+    except OSError:
+        pass
+    try:
+        os.remove(OTA_PENDING)
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
+    recovery_reboot = _ota_boot_check()
     try:
         import flight_display
     except Exception as e:
-        _recovery(e)  # broken code/config: stay reachable for a re-push
+        # A pending update that won't even import must reboot (not wait forever)
+        # so its attempt count climbs to the rollback; a normal broken push stays
+        # up indefinitely for a re-push.
+        _recovery(e, recovery_reboot if recovery_reboot != RUNTIME_CRASH_REBOOT_S else None)
     else:
         try:
             flight_display.main()
@@ -240,4 +307,4 @@ if __name__ == "__main__":
             import machine
             machine.reset()
         except Exception as e:
-            _recovery(e, RUNTIME_CRASH_REBOOT_S)
+            _recovery(e, recovery_reboot)
