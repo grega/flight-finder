@@ -701,3 +701,53 @@ def test_env_key_checkin_creates_no_key_row(client):
     finally:
         flight_service.API_KEY = None
     assert fleet_store.list_api_keys() == []
+
+
+@patch("flight_service.fr_api")
+def test_flight_poll_attributes_key_via_user_agent(mock_api, client):
+    """A client that only polls flights (never checks in - e.g. a monitor worker)
+    still populates last-used / last-device from its User-Agent."""
+    mock_api.get_flights.return_value = []
+    key = fleet_store.create_api_key("Monitor")
+    r = client.get("/flights-in-radius?lat=10&lon=20",
+                   headers={"X-API-Key": key, "User-Agent": "aircraft-monitor"})
+    assert r.status_code == 200
+    row = fleet_store.get_api_key(key)
+    assert row["last_seen_at"] is not None
+    assert row["last_device_id"] == "aircraft-monitor"
+
+
+@patch("flight_service.fr_api")
+def test_flight_poll_prefers_device_id_over_user_agent(mock_api, client):
+    mock_api.get_flights.return_value = []
+    key = fleet_store.create_api_key("Display")
+    r = client.get("/closest-flight?lat=10&lon=20",
+                   headers={"X-API-Key": key, "X-Device-Id": "abcd1234",
+                            "User-Agent": "I75 Matrix Display/1.0.1"})
+    assert r.status_code == 200
+    assert fleet_store.get_api_key(key)["last_device_id"] == "abcd1234"
+
+
+@patch("flight_service.fr_api")
+def test_flight_poll_env_key_not_attributed(mock_api, client, monkeypatch):
+    """The grandfathered env key isn't a table key, so a poll with it attributes
+    to no key row."""
+    mock_api.get_flights.return_value = []
+    monkeypatch.setattr("flight_service.API_KEY", "shared")
+    fleet_store.create_api_key("Untouched")
+    r = client.get("/flights-in-radius?lat=10&lon=20",
+                   headers={"X-API-Key": "shared", "User-Agent": "whoever"})
+    assert r.status_code == 200
+    assert fleet_store.list_api_keys()[0]["last_seen_at"] is None
+
+
+@patch("flight_service.fr_api")
+def test_flight_poll_attribution_throttled(mock_api, client):
+    """Back-to-back polls don't rewrite the row each time (bounded write volume)."""
+    mock_api.get_flights.return_value = []
+    key = fleet_store.create_api_key("Throttle")
+    client.get("/closest-flight?lat=1&lon=2", headers={"X-API-Key": key, "User-Agent": "first"})
+    first_seen = fleet_store.get_api_key(key)["last_seen_at"]
+    client.get("/closest-flight?lat=1&lon=2", headers={"X-API-Key": key, "User-Agent": "second"})
+    row = fleet_store.get_api_key(key)
+    assert row["last_device_id"] == "first" and row["last_seen_at"] == first_seen

@@ -3,7 +3,7 @@ Web service for finding closest flights using FlightRadarAPI
 """
 
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 from FlightRadarAPI import FlightRadar24API
 from math import radians, cos
 from datetime import datetime, timezone
@@ -66,10 +66,27 @@ def validate_api_key():
         return True
     row = fleet_store.get_api_key(provided)
     if row is not None and row["enabled"]:
+        g.matched_api_key = provided  # stash for attribution (see _attribute_key_use)
         return True
     if API_KEY is None and not fleet_store.has_api_keys():
         return True
     return False
+
+
+# Bound how often a flight poll rewrites a key's last-used row (per key).
+_KEY_USE_THROTTLE_S = 60
+
+
+def _attribute_key_use():
+    """Record which client just used its per-client key, on the flight endpoints
+    (throttled) - so keys used by non-checking-in clients (e.g. a monitor worker)
+    still populate 'last used'/'last device'. Identity: the X-Device-Id an I75
+    sends, else the User-Agent. No-op for the env key / unconfigured access."""
+    key = g.get("matched_api_key")
+    if not key:
+        return
+    identity = request.headers.get("X-Device-Id") or request.headers.get("User-Agent")
+    fleet_store.touch_api_key(key, identity, min_interval_s=_KEY_USE_THROTTLE_S)
 
 
 def control_for(device_id, version):
@@ -193,6 +210,7 @@ def get_closest_flight():
     """Find the closest flight to given coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
+    _attribute_key_use()
 
     lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:
@@ -252,6 +270,7 @@ def get_flights_in_radius():
     """Find all flights within a given radius of coordinates."""
     if not validate_api_key():
         return jsonify({"error": "Unauthorized"}), 401
+    _attribute_key_use()
 
     lat, lon, radius_km, max_altitude_ft, error_response, status = parse_and_validate_params()
     if error_response:

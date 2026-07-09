@@ -15,7 +15,7 @@ across threads.
 import os
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Production points this at the mounted Dokku volume (/app/storage/fleet.db);
 # the default keeps local dev and tests self-contained.
@@ -292,15 +292,21 @@ def delete_api_key(key):
         return cur.rowcount > 0
 
 
-def touch_api_key(key, device_id):
-    """Record a key's most recent successful use (last_seen_at + which device).
-    No-op if the key isn't a table key (e.g. the grandfathered env key)."""
+def touch_api_key(key, device_id, min_interval_s=0):
+    """Record a key's most recent successful use (last_seen_at + which client).
+
+    Throttled: when min_interval_s > 0 the write is skipped if the key was
+    already marked used within that window, so this can be called on every flight
+    poll without a write per request. No-op if the key isn't a table key (e.g. the
+    grandfathered env key), since the UPDATE then matches no row."""
     if not key:
         return
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=min_interval_s)).isoformat()
     with _connect() as conn:
         conn.execute(
-            "UPDATE api_keys SET last_seen_at = ?, last_device_id = ? WHERE key = ?",
-            (_now(), device_id, key),
+            "UPDATE api_keys SET last_seen_at = ?, last_device_id = ? "
+            "WHERE key = ? AND (last_seen_at IS NULL OR last_seen_at <= ?)",
+            (_now(), device_id, key, cutoff),
         )
 
 
