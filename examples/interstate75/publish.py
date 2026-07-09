@@ -99,6 +99,10 @@ def main():
     req = urllib.request.Request(f"{url}/ota/publish", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("X-Admin-Token", token)
+    # A non-default User-Agent: urllib's "Python-urllib/x.y" trips Cloudflare's
+    # bot check (HTTP 403, error 1010) at the edge before the request reaches the
+    # service. The devices avoid this by sending their own UA too.
+    req.add_header("User-Agent", "flight-finder-publish/1.0")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             status, payload = resp.status, resp.read()
@@ -112,9 +116,22 @@ def main():
     except urllib.error.URLError as e:
         sys.exit(f"Publish failed: {e.reason}")
 
-    print(f"HTTP {status}: {payload.decode(errors='replace')}")
-    print(f"\nPublished {version} to the canary. Verify it on /fleet, then click "
-          "\"Promote\" to roll it out to the rest of the fleet.")
+    try:
+        result = json.loads(payload)
+    except ValueError:
+        result = None
+
+    files = (result or {}).get("manifest", {}).get("files")
+    if files:
+        print(f"\nPublished {version} to the canary ({len(files)} files):")
+        name_w = max(len(f["name"]) for f in files)
+        for f in sorted(files, key=lambda f: f["name"]):
+            print(f"  {f['name']:<{name_w}}  {f['size']:>7,} B  {f.get('sha256', '')[:12]}…")
+    else:
+        # Unexpected shape - fall back to the raw response rather than hide it
+        print(f"HTTP {status}: {payload.decode(errors='replace')}")
+
+    print("\nVerify it on /fleet, then click \"Promote\" to roll it out to the rest of the fleet.")
 
 
 if __name__ == "__main__":
