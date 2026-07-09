@@ -3,3 +3,5 @@ secrets_backup.py
 last_crash.txt
 _device/
 .push_host
+# build_uf2.py inputs/outputs (stock firmware + generated combined image)
+*.uf2

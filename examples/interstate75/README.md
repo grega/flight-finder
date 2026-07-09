@@ -12,6 +12,40 @@ Follow Pimoroni's guide: https://learn.pimoroni.com/article/getting-started-with
 
 This example was tested on Interstate 75 firmware version `0.0.5`.
 
+There are two ways to get the firmware *and* this code onto a device:
+
+- **[One-file install](#one-file-install-firmware--code-in-a-single-uf2)** (recommended) - a single `.uf2` you drag onto the board once; it brings up the MicroPython interpreter, the Pimoroni libraries, and all the app files together.
+- **Manual copy** (the "Once connected..." steps below) - flash the stock firmware, then copy the `.py` files over USB. Better while developing.
+
+### One-file install (firmware + code in a single `.uf2`)
+
+`build_uf2.py` bundles the Pimoroni "...with filesystem" firmware and every app module into **one `.uf2`**. Drag it onto the board once and the device comes up fully provisioned - no per-file USB copying.
+
+```bash
+pip install littlefs-python    # one-time: used to build the on-flash filesystem image
+
+# Download the stock firmware you'd otherwise flash on its own:
+#   https://github.com/pimoroni/interstate75/releases/tag/v0.0.5
+#   -> i75w_rp2350-v0.0.5-micropython-with-filesystem.uf2
+
+./build_uf2.py -f i75w_rp2350-v0.0.5-micropython-with-filesystem.uf2
+# writes flightdisplay-i75w_rp2350-v0.0.5-micropython-with-filesystem.uf2
+```
+
+Then flash it:
+
+- Hold **BOOTSEL**, plug the board into USB (it mounts as the `RP2350` drive).
+- Drag the generated `.uf2` onto that drive. The board reboots straight into the flight display.
+
+`secrets.py` is omitted by default, so the **first boot lands in the WiFi setup hotspot** (`FlightDisplay-XXXX`, see [WiFi setup mode](#wifi-setup-mode)) - join it and set WiFi + API key from your phone. Nothing needs editing over USB. A default `config.py` is baked in; tune it afterwards via the web UI (`/config-editor`) or `push.py`.
+
+Options:
+
+- `--config _device/config.py` - bake a specific `config.py` (e.g. one you fetched from an already-provisioned device) instead of the repo default.
+- `--include-secrets` - also bake `./secrets.py`, so the device boots straight onto your network and skips the hotspot. Keep such images private - they embed your WiFi password and API key.
+
+**How it works / compatibility.** The "...with filesystem" firmware reserves the top 2 MB of the RP2350's 4 MB flash for a LittleFS filesystem (base `0x10200000`). `build_uf2.py` builds a LittleFS image (matching the rp2 port's `progsize=256` format) holding the app files, converts it to UF2 blocks at that address using the **same UF2 family id it reads out of the firmware**, drops the empty filesystem the stock firmware ships, and emits one coherent UF2 with block numbers rewritten across the whole file - so the RP2350 bootrom writes *everything* before it reboots (plain concatenation can reboot early and skip the filesystem). The 2 MB/2 MB geometry is asserted at build time, and the tool re-mounts the image it produced to confirm every file is present. Validated against firmware **v0.0.5** (Interstate 75 W, RP2350, 4 MB); a different board or flash size needs the `FLASH_SIZE`/`FS_SIZE` constants adjusted. Because it rewrites the whole filesystem region, a one-file install is also a clean **factory reset** - it wipes any previous on-device `config.py`/`secrets.py`.
+
 Once connected to the I75 device:
   - Copy `main.py`, `flight_display.py`, `config.py`, `webserver.py`, `dashboard.py`, `config_editor.py`, `wifi_setup.py`, and `ota.py` onto the device (`main.py` is a thin boot stub that runs `flight_display.py` and falls back to a recovery webserver if it crashes - see [Recovery mode](#recovery-mode)). `./push.py all` copies the whole set for you once the device is on the network.
   - Edit `config.py`:
