@@ -41,7 +41,7 @@ display.set_font("bitmap8")
 
 # Code version, reported in the API User-Agent and on /status. Bump this on
 # each `push.py all` deploy so a fleet view can tell which devices are current.
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # Stable per-board id (full unique_id hex, ~16 chars) sent as X-Device-Id so the
 # API can de-dupe/identify devices even if two share the default USER_AGENT_ID.
