@@ -2,5 +2,5 @@ Flask==3.1.2
 FlightRadarAPI==1.5.1
 airportsdata==20260315
 gunicorn==23.0.0
-pytest==9.0.0
+pytest==9.0.3
 python-dotenv>=1.2.1
