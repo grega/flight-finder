@@ -1090,19 +1090,21 @@ def _draw_setup_screen(ws, screen, ap_ip, ap_name):
             display.text("Join:", 2, 13, WIDTH, 1)
             display.text(ap_name, 2, 23, WIDTH, 1)
         else:
-            display.set_pen(WHITE)
-            display.text("Then open", 2, 2, WIDTH, 1)
+            # IP on the top line: the bottom half of some panels needs extra
+            # config to display at all, and the address is what you can't guess
             display.set_pen(CYAN)
-            display.text("http://", 2, 13, WIDTH, 1)
-            display.text(ap_ip, 2, 23, WIDTH, 1)
+            display.text(ap_ip, 2, 2, WIDTH, 1)
+            display.set_pen(WHITE)
+            display.text("open in", 2, 13, WIDTH, 1)
+            display.text("browser", 2, 23, WIDTH, 1)
     elif kind == "joining":
         display.set_pen(YELLOW)
         display.text("Trying" + (" (auto)" if st["auto"] else ""), 2, 2, WIDTH, 1)
         display.text(st["target_ssid"] or "", 2, 13, WIDTH, 1)
     elif kind == "joined":
         display.set_pen(GREEN)
-        display.text("Saved! IP:", 2, 2, WIDTH, 1)
-        display.text(st["ip"] or "", 2, 13, WIDTH, 1)
+        display.text(st["ip"] or "", 2, 2, WIDTH, 1)
+        display.text("Saved!", 2, 13, WIDTH, 1)
         display.text(f"reboot in {screen[1]}s", 2, 23, WIDTH, 1)
     else: # failed
         display.set_pen(RED)
@@ -1213,10 +1215,11 @@ def main():
         print(f"BOOT: no API key - set it via http://{ip}/wifi")
         display.set_pen(BLACK)
         display.clear()
-        display.set_pen(RED)
-        display.text("No API key", 2, 2, WIDTH, 1)
         display.set_pen(WHITE)
-        display.text(ip, 2, 13, WIDTH, 1)
+        display.text(ip, 2, 2, WIDTH, 1)  # top line: always visible, hardest to guess
+        display.set_pen(RED)
+        display.text("No API key", 2, 13, WIDTH, 1)
+        display.set_pen(WHITE)
         display.text("/wifi", 2, 23, WIDTH, 1)
         i75.update()
         while True:
