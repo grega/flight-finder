@@ -8,3 +8,10 @@ fleet.db-wal
 fleet.db-shm
 ota/
 examples/interstate75/.publish_url
+
+# Key material - never commit (origin-pull certs, see docs/dokku.md)
+*.key
+*.crt
+*.csr
+*.srl
+leaf.ext

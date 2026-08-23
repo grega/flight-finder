@@ -188,44 +188,78 @@ Set the zone's SSL/TLS mode to **Full (strict)** so Cloudflare validates it.
 Zone-level AOP can use Cloudflare's shared certificate, but that only proves a
 request came from *Cloudflare* - any Cloudflare customer could point a zone at
 your IP and pass. Uploading your own certificate proves it came from Cloudflare
-*carrying your certificate*, which is what you want. Self-signed is fine; it
-only ever has to verify against your own nginx:
+*carrying your certificate*, which is what you want.
+
+Cloudflare wants a **leaf** (end-entity) certificate here, so `openssl req
+-x509` on its own won't do - that produces a `CA:TRUE` certificate and the
+upload is rejected with "Missing leaf certificate". Make a throwaway CA, then a
+client certificate signed by it. Nothing public trusts either one; they only
+ever have to verify against your own nginx.
 
 ```bash
+# The CA - nginx trusts this, Cloudflare never sees it
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout cf-origin-pull.key -out cf-origin-pull.crt \
+  -keyout cf-origin-pull-ca.key -out cf-origin-pull-ca.crt \
+  -subj "/CN=example.com origin pull CA"
+
+# The leaf - this is what you upload to Cloudflare
+openssl req -newkey rsa:2048 -nodes \
+  -keyout cf-origin-pull.key -out cf-origin-pull.csr \
   -subj "/CN=example.com origin pull"
+
+cat > leaf.ext <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=clientAuth
+EOF
+
+openssl x509 -req -in cf-origin-pull.csr \
+  -CA cf-origin-pull-ca.crt -CAkey cf-origin-pull-ca.key -CAcreateserial \
+  -days 3650 -out cf-origin-pull.crt -extfile leaf.ext
+
+# Sanity check - this is the verification nginx will perform
+openssl verify -purpose sslclient -CAfile cf-origin-pull-ca.crt cf-origin-pull.crt
 ```
 
-Upload both files under SSL/TLS > Origin Server > Authenticated Origin Pulls,
-then enable the zone toggle. **Keep the private key** - Cloudflare won't show it
-again, and re-uploading needs it.
+Generate these somewhere outside the repo - two of the four files are private
+keys, and this one is public.
+
+Upload `cf-origin-pull.crt` (certificate) and `cf-origin-pull.key` (private key)
+under SSL/TLS > Origin Server > Authenticated Origin Pulls, then enable the zone
+toggle. **Keep both private keys** - Cloudflare won't show the uploaded one
+again, and you need the CA key to issue a replacement leaf later.
 
 ### 3. Enforce it in nginx
 
 Cloudflare must be presenting the certificate *before* nginx starts demanding
 one, or every request 400s in the gap.
 
+nginx verifies the certificate Cloudflare presents against its **issuer**, so
+copy up the *CA* certificate here - not the leaf you uploaded to Cloudflare, and
+never either private key.
+
 ```bash
 # On the Dokku host, as root
 mkdir -p /etc/nginx/certs
-install -m 644 cf-origin-pull.crt /etc/nginx/certs/cf-origin-pull.crt
+install -m 644 cf-origin-pull-ca.crt /etc/nginx/certs/cf-origin-pull-ca.crt
 
 mkdir -p /home/dokku/your-app/nginx.conf.d
 cat > /home/dokku/your-app/nginx.conf.d/origin-pull.conf <<'EOF'
-ssl_client_certificate /etc/nginx/certs/cf-origin-pull.crt;
+ssl_client_certificate /etc/nginx/certs/cf-origin-pull-ca.crt;
 ssl_verify_client on;
 EOF
 chown -R dokku:dokku /home/dokku/your-app/nginx.conf.d
-dokku nginx:build-config your-app
+dokku proxy:build-config your-app
+
+# Confirm it landed. `nginx:show-config` shows only the include *directive* -
+# `nginx -T` resolves the included files, so this is the check that means
+# something:
+nginx -T 2>/dev/null | grep -i ssl_verify_client
 ```
 
 `nginx.conf.d/*.conf` is included inside *that app's* server block, so the rule
 stays scoped to one app. Putting the same directives in the `http` block or a
 default server would enforce mTLS for every app on the host.
-
-A self-signed certificate is its own issuer, so it works directly as the
-verification anchor - `ssl_client_certificate` doesn't need a separate CA.
 
 ### 4. Verify
 
