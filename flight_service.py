@@ -19,6 +19,8 @@ import ota_store
 load_dotenv()
 
 app = Flask(__name__)
+# Every route matches with or without a trailing slash
+app.url_map.strict_slashes = False
 fr_api = FlightRadar24API()
 
 API_KEY = os.getenv("SERVICE_API_KEY", None)
