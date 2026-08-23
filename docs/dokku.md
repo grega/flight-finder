@@ -63,6 +63,11 @@ Using Let's Encrypt (back on the remote machine):
 dokku letsencrypt:enable flight-finder
 ```
 
+If the app ends up behind Cloudflare Access, swap this for a Cloudflare Origin
+CA certificate - Let's Encrypt renewals break once an Access policy covers the
+ACME challenge path. See [Locking the origin to
+Cloudflare](#locking-the-origin-to-cloudflare).
+
 ### 6. Persistent storage (fleet database)
 
 The fleet view records a heartbeat per device into a SQLite database. A container's filesystem is wiped on every deploy, so the database must live on a mounted host volume to survive `git push dokku main`.
@@ -92,9 +97,157 @@ Notes:
 - `storage:ensure-directory` creates the host directory owned by the container's runtime user, so the app can write to it.
 - The data now survives redeploys and restarts because it lives on the host volume, not the ephemeral container filesystem. This matters for both the fleet database and the OTA payload (`OTA_DIR`), which holds the published device firmware + `manifest.json`.
 - WAL mode creates sibling `fleet.db-wal` and `fleet.db-shm` files next to `fleet.db` on the volume - this is expected.
-- `ADMIN_TOKEN` guards `/fleet` (HTML), `/fleet.json`, `/fleet/command`, `/fleet/promote`, `/ota/publish`, and the per-client-key endpoints (`/keys`, `/keys/enable`, `/keys/disable`, `/keys/delete`). In a browser, `/fleet` prompts for HTTP Basic Auth: enter anything as the username and the admin token as the password. For scripts, send it as `X-Admin-Token: <token>` (or `?token=<token>`). Without `ADMIN_TOKEN` set, those endpoints refuse to serve (503) rather than exposing device IPs.
+- The admin endpoints - `/fleet` (HTML), `/fleet.json`, `/fleet/command`, `/fleet/logs`, `/fleet/promote`, `/ota/publish`, and the per-client-key endpoints (`/keys`, `/keys/enable`, `/keys/disable`, `/keys/delete`) - accept either a verified Cloudflare Access identity (browsers, see below) or `ADMIN_TOKEN` as `X-Admin-Token: <token>` / `Authorization: Bearer <token>` / `?token=<token>` (scripts). With neither configured they refuse to serve (503) rather than exposing device IPs.
 - **Per-client API keys**: the `/fleet` page's "API keys" panel creates (one per client/device), labels, and revokes keys - a disabled or deleted key is rejected on that device's next request, without touching any other device. A device presents its key as `X-API-Key`; provision it via the device's WiFi setup hotspot, `push.py`, or by baking it into `secrets.py` (see the device README). The device table's `Client` column shows which key each device last authenticated with.
 - `CANARY_DEVICE_ID` is the one device (your own - find its id on `/fleet` or the device's `/status`) that receives a freshly published OTA build first. Everyone else only updates after you Promote it. See the device README's [Fleet management & over-the-air updates](../examples/interstate75/README.md#fleet-management--over-the-air-updates).
+
+## Admin access via Cloudflare Access
+
+The `/fleet` page and the other admin endpoints are meant for you, not for the
+devices. Rather than a shared password in the browser, put Cloudflare Access in
+front of them and have the app verify the identity Access asserts.
+
+1. **Create the Access application** (Zero Trust > Access > Applications, type
+   *Self-hosted*). Cover every admin path, not just `/fleet` - the fleet page's
+   buttons call `/keys*`, `/fleet/command` and `/fleet/promote`, and its log
+   links hit `/fleet/logs`. Either add one include path per admin route, or
+   protect the whole hostname and *bypass* the paths the devices need:
+   `/closest-flight`, `/flights-in-radius`, `/device/checkin`, `/ota/manifest`,
+   `/ota/file/*`, `/health`. Devices can't complete an SSO login, so anything
+   they call must not sit behind an Access policy.
+2. **Add a policy** - an *Allow* rule for your own email (or your domain).
+3. **Copy the Application Audience (AUD) tag** from the application's overview,
+   and note your team domain (`<team>.cloudflareaccess.com`).
+4. **Configure the app**:
+
+   ```bash
+   dokku config:set flight-finder \
+     CF_ACCESS_TEAM_DOMAIN=<team>.cloudflareaccess.com \
+     CF_ACCESS_AUD=<application-audience-tag>
+   ```
+
+The service then fetches the team's public keys from
+`https://<team>.cloudflareaccess.com/cdn-cgi/access/certs` (cached, re-fetched
+on rotation) and checks each request's `Cf-Access-Jwt-Assertion` header - or the
+`CF_Authorization` cookie, which is what same-origin `fetch()` calls from the
+fleet page carry - for a valid signature, audience, issuer, and expiry.
+
+Notes:
+- **Verification is what makes this safe.** The app trusts a *signed* assertion,
+  not the mere fact that a request arrived. A request that reaches the origin
+  outside Cloudflare carries no assertion and is refused.
+- **Keep `ADMIN_TOKEN` set.** `publish.py` and any `curl` against `/ota/publish`
+  authenticate with it; an SSO redirect would break them. If you'd rather not
+  keep a shared token, issue an Access **service token** instead, add it to the
+  application's policy, and have the script send the `CF-Access-Client-Id` /
+  `CF-Access-Client-Secret` pair - service-token assertions verify through the
+  same path (they carry `common_name` rather than `email`).
+- **The origin is reachable around Access until you lock it.** See
+  [Locking the origin to Cloudflare](#locking-the-origin-to-cloudflare) below -
+  worth doing before you rely on Access.
+
+## Locking the origin to Cloudflare
+
+Access only protects traffic that goes *through* Cloudflare. Dokku routes by
+hostname, but the `Host` header is caller-controlled, so an app on a public
+Dokku host answers to anyone who knows its IP:
+
+```bash
+# From anywhere; substitute your Dokku host's public IP
+curl -sk -o /dev/null -w '%{http_code}\n' \
+  -H 'Host: your-app.example.com' https://<dokku-host-ip>/fleet
+```
+
+A `401` there is the app refusing an unauthenticated request - which is exactly
+why it verifies the Access assertion rather than trusting the perimeter. But a
+request that never touches Cloudflare never touches your Access policy either,
+so close the bypass with an origin certificate plus Authenticated Origin Pulls
+(mTLS): Cloudflare presents a client certificate, and nginx refuses anyone who
+can't produce it.
+
+### 1. Origin certificate (optional, but do it before tightening Access)
+
+A publicly-trusted certificate on the origin renews over HTTP-01 at
+`/.well-known/acme-challenge/`. Once an Access policy covers the whole hostname
+that path redirects to the Access login, the renewal fails, and the certificate
+quietly expires. A [Cloudflare Origin CA
+certificate](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)
+lasts 15 years and needs no challenge, which removes the failure mode:
+
+```bash
+# Generate in the dashboard (SSL/TLS > Origin Server > Create Certificate),
+# save the certificate + key locally, then:
+tar cvf cert-key.tar server.crt server.key
+dokku certs:add your-app < cert-key.tar
+```
+
+Set the zone's SSL/TLS mode to **Full (strict)** so Cloudflare validates it.
+
+### 2. Client certificate for Authenticated Origin Pulls
+
+Zone-level AOP can use Cloudflare's shared certificate, but that only proves a
+request came from *Cloudflare* - any Cloudflare customer could point a zone at
+your IP and pass. Uploading your own certificate proves it came from Cloudflare
+*carrying your certificate*, which is what you want. Self-signed is fine; it
+only ever has to verify against your own nginx:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout cf-origin-pull.key -out cf-origin-pull.crt \
+  -subj "/CN=example.com origin pull"
+```
+
+Upload both files under SSL/TLS > Origin Server > Authenticated Origin Pulls,
+then enable the zone toggle. **Keep the private key** - Cloudflare won't show it
+again, and re-uploading needs it.
+
+### 3. Enforce it in nginx
+
+Cloudflare must be presenting the certificate *before* nginx starts demanding
+one, or every request 400s in the gap.
+
+```bash
+# On the Dokku host, as root
+mkdir -p /etc/nginx/certs
+install -m 644 cf-origin-pull.crt /etc/nginx/certs/cf-origin-pull.crt
+
+mkdir -p /home/dokku/your-app/nginx.conf.d
+cat > /home/dokku/your-app/nginx.conf.d/origin-pull.conf <<'EOF'
+ssl_client_certificate /etc/nginx/certs/cf-origin-pull.crt;
+ssl_verify_client on;
+EOF
+chown -R dokku:dokku /home/dokku/your-app/nginx.conf.d
+dokku nginx:build-config your-app
+```
+
+`nginx.conf.d/*.conf` is included inside *that app's* server block, so the rule
+stays scoped to one app. Putting the same directives in the `http` block or a
+default server would enforce mTLS for every app on the host.
+
+A self-signed certificate is its own issuer, so it works directly as the
+verification anchor - `ssl_client_certificate` doesn't need a separate CA.
+
+### 4. Verify
+
+```bash
+# Direct to the origin: should now fail the handshake, not return 401
+curl -sk -H 'Host: your-app.example.com' https://<dokku-host-ip>/health
+# expect: TLS alert, or "400 No required SSL certificate was sent"
+
+# Through Cloudflare: still fine
+curl -s https://your-app.example.com/health
+```
+
+Notes:
+- **Scope.** The zone toggle makes Cloudflare present the certificate to every
+  proxied origin in the zone. Origins that don't ask for a client certificate
+  never see it, so other apps are unaffected - enforcement is the nginx side,
+  per app. DNS-only ("grey-clouded") hostnames aren't proxied and so aren't
+  covered at all.
+- **Devices are fine.** They reach the service through Cloudflare like any other
+  client, so mTLS on the vhost doesn't affect check-ins or OTA.
+- **Alternative.** A `cloudflared` tunnel with port 443 unpublished avoids
+  inbound origin traffic entirely, at the cost of running the tunnel daemon.
 
 ## Dokku Configuration Options
 

@@ -1,6 +1,10 @@
+import base64
 import pytest
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from flight_service import app, calculate_bounds, API_KEY, serialize_flight, airport_name
+import cf_access
 import fleet_store
 import ota_store
 
@@ -18,6 +22,13 @@ def isolated_fleet_db(tmp_path, monkeypatch):
     pollute) one database."""
     monkeypatch.setattr("fleet_store.DB_PATH", str(tmp_path / "fleet.db"))
     fleet_store.init_db()
+
+@pytest.fixture(autouse=True)
+def disable_cf_access(monkeypatch):
+    """Keep Cloudflare Access auth off by default, so a developer with
+    CF_ACCESS_* set in their .env still exercises the token paths."""
+    monkeypatch.setattr("cf_access.TEAM_DOMAIN", None)
+    monkeypatch.setattr("cf_access.AUD", None)
 
 @pytest.fixture(autouse=True)
 def isolated_ota_dir(tmp_path, monkeypatch):
@@ -501,11 +512,51 @@ def test_fleet_json_accepts_token_query_param(client, monkeypatch):
     assert client.get("/fleet.json?token=sekret").status_code == 200
 
 
-def test_fleet_html_prompts_for_basic_auth(client, monkeypatch):
+def test_fleet_html_401_without_credential(client, monkeypatch):
+    """No browser Basic Auth prompt any more - browsers arrive already
+    authenticated by Cloudflare Access, so an unauthenticated request just
+    gets a flat 401 rather than a password box."""
     monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
     response = client.get("/fleet")
     assert response.status_code == 401
-    assert response.headers.get("WWW-Authenticate", "").startswith("Basic")
+    assert "WWW-Authenticate" not in response.headers
+
+
+def test_basic_auth_password_is_no_longer_accepted(client, monkeypatch):
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", "sekret")
+    creds = base64.b64encode(b"admin:sekret").decode()
+    response = client.get("/fleet", headers={"Authorization": f"Basic {creds}"})
+    assert response.status_code == 401
+
+
+def test_fleet_accepts_verified_access_identity(client, monkeypatch):
+    """A request Cloudflare Access has signed gets in with no admin token."""
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", None)
+    monkeypatch.setattr("cf_access.TEAM_DOMAIN", "team.cloudflareaccess.com")
+    monkeypatch.setattr("cf_access.AUD", "aud-tag")
+    monkeypatch.setattr("cf_access.verify", lambda token: {"email": "a@b.c"})
+    response = client.get("/fleet", headers={"Cf-Access-Jwt-Assertion": "signed"})
+    assert response.status_code == 200
+
+
+def test_fleet_rejects_unverifiable_access_assertion(client, monkeypatch):
+    """A forged/expired assertion fails verification and is refused - the
+    header alone is not trusted."""
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", None)
+    monkeypatch.setattr("cf_access.TEAM_DOMAIN", "team.cloudflareaccess.com")
+    monkeypatch.setattr("cf_access.AUD", "aud-tag")
+    monkeypatch.setattr("cf_access.verify", lambda token: None)
+    response = client.get("/fleet", headers={"Cf-Access-Jwt-Assertion": "forged"})
+    assert response.status_code == 401
+
+
+def test_access_config_alone_satisfies_the_503_gate(client, monkeypatch):
+    """With Access configured the admin endpoints serve (401 for an
+    unauthenticated caller), rather than 503 for "no credential configured"."""
+    monkeypatch.setattr("flight_service.ADMIN_TOKEN", None)
+    monkeypatch.setattr("cf_access.TEAM_DOMAIN", "team.cloudflareaccess.com")
+    monkeypatch.setattr("cf_access.AUD", "aud-tag")
+    assert client.get("/fleet.json").status_code == 401
 
 
 def test_fleet_html_503_when_token_unset(client, monkeypatch):
@@ -751,3 +802,69 @@ def test_flight_poll_attribution_throttled(mock_api, client):
     client.get("/closest-flight?lat=1&lon=2", headers={"X-API-Key": key, "User-Agent": "second"})
     row = fleet_store.get_api_key(key)
     assert row["last_device_id"] == "first" and row["last_seen_at"] == first_seen
+
+
+# ---- Cloudflare Access JWT verification -----------------------------------
+
+@pytest.fixture
+def access_signing(monkeypatch):
+    """Sign Access-shaped JWTs with a throwaway RSA key and serve its public
+    half as the JWKS, so verify() is exercised for real rather than stubbed."""
+    import jwt as pyjwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    monkeypatch.setattr("cf_access.TEAM_DOMAIN", "team.cloudflareaccess.com")
+    monkeypatch.setattr("cf_access.AUD", "aud-tag")
+    monkeypatch.setattr("cf_access._client",
+                        lambda fresh=False: SimpleNamespace(
+                            get_signing_key_from_jwt=lambda t: SimpleNamespace(
+                                key=key.public_key())))
+
+    def sign(**overrides):
+        claims = {"aud": "aud-tag", "iss": "https://team.cloudflareaccess.com",
+                  "email": "greg@example.com",
+                  "exp": datetime.now(timezone.utc) + timedelta(minutes=5)}
+        claims.update(overrides)
+        return pyjwt.encode(claims, key, algorithm="RS256")
+
+    return sign
+
+
+def test_access_verify_accepts_a_valid_assertion(access_signing):
+    claims = cf_access.verify(access_signing())
+    assert claims["email"] == "greg@example.com"
+
+
+def test_access_verify_rejects_another_applications_token(access_signing):
+    """The AUD tag is what ties a token to this application; a valid token
+    minted for a different Access app must not open the fleet."""
+    assert cf_access.verify(access_signing(aud="someone-elses-app")) is None
+
+
+def test_access_verify_rejects_expired_and_foreign_issuer(access_signing):
+    expired = access_signing(exp=datetime.now(timezone.utc) - timedelta(minutes=1))
+    assert cf_access.verify(expired) is None
+    assert cf_access.verify(access_signing(iss="https://evil.example.com")) is None
+
+
+def test_access_verify_rejects_an_unsigned_token(access_signing):
+    """`alg: none` and self-signed tokens are the obvious forgeries to try."""
+    import jwt as pyjwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    forged = pyjwt.encode({"aud": "aud-tag",
+                           "iss": "https://team.cloudflareaccess.com",
+                           "email": "attacker@example.com",
+                           "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
+                          other, algorithm="RS256")
+    assert cf_access.verify(forged) is None
+
+
+def test_access_verify_is_off_when_unconfigured(monkeypatch, access_signing):
+    """Without CF_ACCESS_* set, even a well-formed assertion is ignored."""
+    token = access_signing()
+    monkeypatch.setattr("cf_access.AUD", None)
+    assert cf_access.enabled() is False
+    assert cf_access.verify(token) is None

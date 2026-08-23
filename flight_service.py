@@ -13,6 +13,7 @@ import airportsdata
 import hmac
 import os
 
+import cf_access
 import fleet_store
 import ota_store
 
@@ -26,6 +27,8 @@ fr_api = FlightRadar24API()
 API_KEY = os.getenv("SERVICE_API_KEY", None)
 # Generic admin token guarding the fleet view (and any future admin endpoints).
 # Deliberately separate from SERVICE_API_KEY so it can be rotated independently.
+# Scripts (publish.py, curl) authenticate with this; browsers go through
+# Cloudflare Access instead - see cf_access.py.
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", None)
 # The one device that receives a newly-published build first (canary). A publish
 # reaches only this device; a manual promote then widens it to the whole fleet.
@@ -111,11 +114,21 @@ def control_for(device_id, version):
     return control
 
 
+def admin_configured():
+    """True when at least one admin credential is set up. With neither, the
+    admin endpoints refuse to serve rather than exposing device data."""
+    return ADMIN_TOKEN is not None or cf_access.enabled()
+
+
 def require_admin():
-    """Gate the fleet endpoints. Accepts the admin token via X-Admin-Token,
-    Authorization: Bearer, HTTP Basic Auth password, or ?token=. Deny-by-default
-    when unset - the fleet view exposes device IPs, so unlike the flight
-    endpoints it must not silently open."""
+    """Gate the fleet endpoints. Accepts either a verified Cloudflare Access
+    identity (how browsers get in - Access fronts the admin paths and signs
+    each proxied request) or the admin token via X-Admin-Token,
+    Authorization: Bearer, or ?token= (how scripts get in). Deny-by-default
+    when neither is configured - the fleet view exposes device IPs, so unlike
+    the flight endpoints it must not silently open."""
+    if cf_access.identity(request):
+        return True
     if ADMIN_TOKEN is None:
         return False
     provided = (
@@ -126,8 +139,6 @@ def require_admin():
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             provided = auth_header[len('Bearer '):]
-        elif request.authorization and request.authorization.password:
-            provided = request.authorization.password  # HTTP Basic (browser prompt)
     return provided == ADMIN_TOKEN
 
 
@@ -568,7 +579,8 @@ def _render_fleet_html(devices, canary_id=None, logs_index=None,
 _FLEET_JS = r"""
 (function(){
   var token = new URLSearchParams(location.search).get('token');
-  // When authed via ?token= (not Basic Auth), propagate it to fetches + log links.
+  // When authed via ?token= (not Cloudflare Access), propagate it to fetches
+  // + log links; under Access the CF_Authorization cookie rides along instead.
   if(token){
     document.querySelectorAll('a.logs-link').forEach(function(a){
       a.href += (a.href.indexOf('?')>=0?'&':'?') + 'token=' + encodeURIComponent(token);
@@ -679,8 +691,8 @@ _FLEET_JS = r"""
 @app.route('/fleet.json', methods=['GET'])
 def fleet_json():
     """Fleet data as JSON (admin-only)."""
-    if ADMIN_TOKEN is None:
-        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not admin_configured():
+        return jsonify({"error": "No admin credential is configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
     return jsonify({"devices": fleet_store.list_devices(),
@@ -689,15 +701,13 @@ def fleet_json():
 
 @app.route('/fleet', methods=['GET'])
 def fleet_view():
-    """Human-facing fleet table (admin-only). Prompts for HTTP Basic Auth in a
-    browser when unauthorized - enter the admin token as the password."""
-    if ADMIN_TOKEN is None:
-        return Response("ADMIN_TOKEN is not configured on the server", status=503)
+    """Human-facing fleet table (admin-only). In a browser this is reached
+    through Cloudflare Access, which fronts the admin paths; scripts pass the
+    admin token instead."""
+    if not admin_configured():
+        return Response("No admin credential is configured on the server", status=503)
     if not require_admin():
-        return Response(
-            "Authentication required", status=401,
-            headers={"WWW-Authenticate": 'Basic realm="Flight fleet"'},
-        )
+        return Response("Authentication required", status=401)
     html = _render_fleet_html(
         fleet_store.list_devices(), canary_id=CANARY_DEVICE_ID,
         logs_index=fleet_store.logs_index(),
@@ -716,8 +726,8 @@ _FLEET_COMMANDS = {"reboot", "enter-setup", "clear-crash", "send-logs"}
 def fleet_command():
     """Queue a one-shot command for a device (admin-only). Delivered on the
     device's next check-in and acked on the one after."""
-    if ADMIN_TOKEN is None:
-        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not admin_configured():
+        return jsonify({"error": "No admin credential is configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
@@ -733,8 +743,8 @@ def fleet_command():
 def keys_create():
     """Create a new per-client API key (admin-only). Returns the plaintext key
     once - it's also visible afterwards on the fleet page (stored plaintext)."""
-    if ADMIN_TOKEN is None:
-        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not admin_configured():
+        return jsonify({"error": "No admin credential is configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
@@ -750,8 +760,8 @@ def keys_create():
 def keys_set_enabled():
     """Enable or disable an API key (admin-only). Disabling revokes it on the
     client's next request; the key stays listed so it can be re-enabled."""
-    if ADMIN_TOKEN is None:
-        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not admin_configured():
+        return jsonify({"error": "No admin credential is configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
@@ -768,8 +778,8 @@ def keys_set_enabled():
 def keys_delete():
     """Delete an API key entirely (admin-only). A device still holding it drops
     to Unauthorized on its next request."""
-    if ADMIN_TOKEN is None:
-        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not admin_configured():
+        return jsonify({"error": "No admin credential is configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
@@ -785,8 +795,8 @@ def keys_delete():
 def fleet_promote():
     """Roll the currently-published (canary-tested) build out to the whole fleet:
     fleet_version = canary_version. Admin-only; the fleet page confirms first."""
-    if ADMIN_TOKEN is None:
-        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not admin_configured():
+        return jsonify({"error": "No admin credential is configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
     canary = fleet_store.get_meta("canary_version")
@@ -800,13 +810,10 @@ def fleet_promote():
 def fleet_logs():
     """The latest uploaded log set for a device (admin-only). Requested via the
     send-logs command; the device uploads on its next check-in."""
-    if ADMIN_TOKEN is None:
-        return Response("ADMIN_TOKEN is not configured on the server", status=503)
+    if not admin_configured():
+        return Response("No admin credential is configured on the server", status=503)
     if not require_admin():
-        return Response(
-            "Authentication required", status=401,
-            headers={"WWW-Authenticate": 'Basic realm="Flight fleet"'},
-        )
+        return Response("Authentication required", status=401)
     device_id = request.args.get("device_id", "")
     entry = fleet_store.get_logs(device_id)
     if entry is None:
@@ -843,8 +850,8 @@ def ota_file(name):
 def ota_publish():
     """Publish a new firmware set (admin-only, from publish.py). Reaches the
     canary only: sets canary_version, leaving fleet_version until a promote."""
-    if ADMIN_TOKEN is None:
-        return jsonify({"error": "ADMIN_TOKEN is not configured on the server"}), 503
+    if not admin_configured():
+        return jsonify({"error": "No admin credential is configured on the server"}), 503
     if not require_admin():
         return jsonify({"error": "Unauthorized"}), 401
     body = request.get_json(silent=True) or {}

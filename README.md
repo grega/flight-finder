@@ -223,18 +223,23 @@ Headers:
 
 Every authenticated call to `/closest-flight` and `/flights-in-radius` doubles as a device heartbeat: the service records the caller (from the `User-Agent` and an optional `X-Device-Id` header), its reported code version, source IP, and last-seen time into a small SQLite database (`FLEET_DB_PATH`, default `fleet.db`). This is how the Interstate 75 displays report in - see [examples/interstate75](examples/interstate75/). No extra requests are made; it piggybacks on the polling the devices already do.
 
-The fleet endpoints are guarded by a separate `ADMIN_TOKEN` env var (independent of `SERVICE_API_KEY`). When `ADMIN_TOKEN` is unset they return `503` rather than exposing device data.
+The fleet endpoints are guarded separately from `SERVICE_API_KEY`, by either of two admin credentials:
+
+- **Cloudflare Access** (browsers) - set `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` and the service verifies the signed assertion Access attaches to each proxied request (signature, audience, issuer, expiry) before serving. Unverifiable or absent, the request is refused, so a caller that reaches the origin outside Cloudflare gains nothing.
+- **`ADMIN_TOKEN`** (scripts) - a shared token for `publish.py`, `curl`, and anything else that can't do an SSO round-trip.
+
+With neither configured the endpoints return `503` rather than exposing device data.
 
 #### `GET /fleet`
 
-Human-readable HTML table of known devices (ID, label, version, last-seen with an offline flag, IP, request count). In a browser it prompts for HTTP Basic Auth - enter the admin token as the password.
+Human-readable HTML table of known devices (ID, label, version, last-seen with an offline flag, IP, request count). In a browser you reach it through Cloudflare Access, which handles the login.
 
 #### `GET /fleet.json`
 
 The same data as JSON.
 
 Headers / auth (both endpoints):
-- `X-Admin-Token: <token>`, `Authorization: Bearer <token>`, HTTP Basic Auth password, or `?token=<token>`.
+- A Cloudflare Access session (the `Cf-Access-Jwt-Assertion` header or `CF_Authorization` cookie), or the admin token as `X-Admin-Token: <token>`, `Authorization: Bearer <token>`, or `?token=<token>`.
 
 For persistent storage across deploys, see [docs/dokku.md](docs/dokku.md).
 
